@@ -1,0 +1,165 @@
+{
+  "_comment": "FAKE fixtures, manually constructed. No real keys, models, or user data.",
+  "text": {
+    "id": "chatcmpl-fake-1",
+    "object": "chat.completion",
+    "model": "fake/routed-model-a",
+    "choices": [
+      {
+        "index": 0,
+        "message": { "role": "assistant", "content": "Hello from a fake model." },
+        "finish_reason": "stop"
+      }
+    ],
+    "usage": { "prompt_tokens": 12, "completion_tokens": 7, "total_tokens": 19 }
+  },
+  "singleToolCall": {
+    "id": "chatcmpl-fake-2",
+    "object": "chat.completion",
+    "model": "fake/routed-model-a",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": null,
+          "tool_calls": [
+            {
+              "id": "call_fake_001",
+              "type": "function",
+              "function": {
+                "name": "reviews.list",
+                "arguments": "{\"packageName\":\"com.example.fake\",\"maxResults\":5}"
+              }
+            }
+          ]
+        },
+        "finish_reason": "tool_calls"
+      }
+    ],
+    "usage": { "prompt_tokens": 40, "completion_tokens": 15, "total_tokens": 55 }
+  },
+  "multiToolCall": {
+    "id": "chatcmpl-fake-3",
+    "object": "chat.completion",
+    "model": "fake/routed-model-b",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "Working on it.",
+          "tool_calls": [
+            {
+              "id": "call_fake_a",
+              "type": "function",
+              "function": { "name": "reviews.get", "arguments": "{\"reviewId\":\"r-1\"}" }
+            },
+            {
+              "id": "call_fake_b",
+              "type": "function",
+              "function": { "name": "reviews.get", "arguments": "{\"reviewId\":\"r-2\"}" }
+            },
+            {
+              "id": "call_fake_c",
+              "type": "function",
+              "function": { "name": "metrics.anr", "arguments": "[1,2,3]" }
+            }
+          ]
+        },
+        "finish_reason": "tool_calls"
+      }
+    ]
+  },
+  "afterToolResult": {
+    "id": "chatcmpl-fake-4",
+    "object": "chat.completion",
+    "model": "fake/routed-model-a",
+    "choices": [
+      {
+        "index": 0,
+        "message": { "role": "assistant", "content": "There are 2 new reviews." },
+        "finish_reason": "stop"
+      }
+    ],
+    "usage": { "prompt_tokens": 90, "completion_tokens": 9, "total_tokens": 99 }
+  },
+  "lengthFinish": {
+    "choices": [
+      {
+        "index": 0,
+        "message": { "role": "assistant", "content": "truncated…" },
+        "finish_reason": "length"
+      }
+    ]
+  },
+  "malformedToolArguments": {
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": null,
+          "tool_calls": [
+            {
+              "id": "call_bad",
+              "type": "function",
+              "function": { "name": "reviews.list", "arguments": "{not json" }
+            }
+          ]
+        },
+        "finish_reason": "tool_calls"
+      }
+    ]
+  },
+  "blankToolName": {
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "tool_calls": [
+            { "id": "call_x", "type": "function", "function": { "name": "  ", "arguments": "{}" } }
+          ]
+        }
+      }
+    ]
+  },
+  "blankToolCallId": {
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "id": "",
+              "type": "function",
+              "function": { "name": "reviews.list", "arguments": "{}" }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "toolCallsNotArray": {
+    "choices": [{ "index": 0, "message": { "role": "assistant", "tool_calls": { "id": "x" } } }]
+  },
+  "missingChoices": { "id": "chatcmpl-fake-5", "object": "chat.completion" },
+  "emptyChoices": { "choices": [] },
+  "malformedMessage": { "choices": [{ "index": 0, "message": "not-an-object" }] },
+  "contentNotString": {
+    "choices": [{ "index": 0, "message": { "role": "assistant", "content": 42 } }]
+  },
+  "badUsage": {
+    "choices": [{ "index": 0, "message": { "role": "assistant", "content": "x" } }],
+    "usage": { "prompt_tokens": -1, "completion_tokens": "seven" }
+  },
+  "httpErrorBody": {
+    "error": {
+      "message": "UPSTREAM-SECRET-DETAIL-MARKER invalid api key sk-fake-should-not-echo",
+      "type": "invalid_request_error",
+      "code": "invalid_api_key"
+    }
+  }
+}

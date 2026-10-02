@@ -1,0 +1,32 @@
+# Dependencies (installed starting Phase 0.3)
+node_modules/
+
+# Build output
+dist/
+
+# Secrets — never commit service-account credentials
+*.service-account.json
+service-account*.json
+*.key
+*.pem
+.env
+.env.*
+
+# Local operator config (real config with credentials paths stays local)
+config/playops.yaml
+
+# Audit logs (runtime data, durable but local)
+*.audit.jsonl
+logs/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+
+# Test coverage / caches
+coverage/
+.cache/
+*.tsbuildinfo

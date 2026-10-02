@@ -1,0 +1,320 @@
+{
+  "_comment": "FAKE fixtures for Phase 3.3 review reply-drafting tests. Manually constructed. No real users, reviews, keys, models, or provider data.",
+  "drafts": {
+    "bug_id": {
+      "toolCalls": [
+        {
+          "id": "dr-1",
+          "name": "submit_review_reply_draft",
+          "arguments": {
+            "replyText": "Terima kasih telah melaporkan masalah ini. Kami mohon maaf atas ketidaknyamanan yang Anda alami dan akan meninjau laporan Anda."
+          }
+        }
+      ],
+      "finishReason": "tool_calls"
+    },
+    "bug_en": {
+      "toolCalls": [
+        {
+          "id": "dr-2",
+          "name": "submit_review_reply_draft",
+          "arguments": {
+            "replyText": "Thank you for reporting this issue. We apologize for the inconvenience and will look into it."
+          }
+        }
+      ],
+      "finishReason": "tool_calls"
+    },
+    "feature_request": {
+      "toolCalls": [
+        {
+          "id": "dr-3",
+          "name": "submit_review_reply_draft",
+          "arguments": {
+            "replyText": "Thank you for your suggestion! We appreciate your feedback and will consider it for future updates."
+          }
+        }
+      ],
+      "finishReason": "tool_calls"
+    },
+    "praise_es": {
+      "toolCalls": [
+        {
+          "id": "dr-4",
+          "name": "submit_review_reply_draft",
+          "arguments": {
+            "replyText": "Muchas gracias por sus amables palabras. Nos alegra saber que disfruta de la aplicacion."
+          }
+        }
+      ],
+      "finishReason": "tool_calls"
+    },
+    "complaint_en": {
+      "toolCalls": [
+        {
+          "id": "dr-5",
+          "name": "submit_review_reply_draft",
+          "arguments": {
+            "replyText": "We are sorry to hear about your experience. Your feedback is important to us and we will take it into consideration."
+          }
+        }
+      ],
+      "finishReason": "tool_calls"
+    },
+    "spam_id": {
+      "toolCalls": [
+        {
+          "id": "dr-6",
+          "name": "submit_review_reply_draft",
+          "arguments": {
+            "replyText": "Terima kasih atas tanggapan Anda."
+          }
+        }
+      ],
+      "finishReason": "tool_calls"
+    },
+    "und_english_fallback": {
+      "toolCalls": [
+        {
+          "id": "dr-7",
+          "name": "submit_review_reply_draft",
+          "arguments": {
+            "replyText": "Thank you for your feedback."
+          }
+        }
+      ],
+      "finishReason": "tool_calls"
+    },
+    "star_only_praise": {
+      "toolCalls": [
+        {
+          "id": "dr-8",
+          "name": "submit_review_reply_draft",
+          "arguments": {
+            "replyText": "Thank you for your kind rating! We appreciate your support."
+          }
+        }
+      ],
+      "finishReason": "tool_calls"
+    },
+    "star_only_complaint": {
+      "toolCalls": [
+        {
+          "id": "dr-9",
+          "name": "submit_review_reply_draft",
+          "arguments": {
+            "replyText": "We are sorry to hear about your experience. We appreciate your feedback and will work to improve."
+          }
+        }
+      ],
+      "finishReason": "tool_calls"
+    },
+    "assistant_text_plus_valid_call": {
+      "content": "Let me draft a reply.",
+      "toolCalls": [
+        {
+          "id": "dr-10",
+          "name": "submit_review_reply_draft",
+          "arguments": {
+            "replyText": "Thank you for your feedback."
+          }
+        }
+      ],
+      "finishReason": "tool_calls"
+    },
+    "injection_review_safe_reply": {
+      "toolCalls": [
+        {
+          "id": "dr-11",
+          "name": "submit_review_reply_draft",
+          "arguments": {
+            "replyText": "Thank you for your feedback. We take all reports seriously and will review this matter."
+          }
+        }
+      ],
+      "finishReason": "tool_calls"
+    },
+    "exactly_350_chars": {
+      "toolCalls": [
+        {
+          "id": "dr-12",
+          "name": "submit_review_reply_draft",
+          "arguments": {
+            "replyText": "Thank you for your detailed feedback about our application. We truly value every user's opinion and take all reports seriously. Our team is committed to providing the best possible experience for all users. Please rest assured that your comments have been noted and will be shared with our development team for review and consideration in future upda"
+          }
+        }
+      ],
+      "finishReason": "tool_calls"
+    }
+  },
+  "failures": {
+    "blank_reply": {
+      "toolCalls": [
+        {
+          "id": "dr-f1",
+          "name": "submit_review_reply_draft",
+          "arguments": {
+            "replyText": ""
+          }
+        }
+      ],
+      "finishReason": "tool_calls"
+    },
+    "overlong_reply": {
+      "toolCalls": [
+        {
+          "id": "dr-f2",
+          "name": "submit_review_reply_draft",
+          "arguments": {
+            "replyText": "Thank you for your detailed feedback about our application. We truly value every user's opinion and take all reports seriously. Our team is committed to providing the best possible experience for all users. Please rest assured that your comments have been noted and will be shared with our development team for review and consideration in future updatx"
+          }
+        }
+      ],
+      "finishReason": "tool_calls"
+    },
+    "html_reply": {
+      "toolCalls": [
+        {
+          "id": "dr-f3",
+          "name": "submit_review_reply_draft",
+          "arguments": {
+            "replyText": "Thank you for your feedback. Please visit <a href=\"https://example.com\">our site</a> for more info."
+          }
+        }
+      ],
+      "finishReason": "tool_calls"
+    },
+    "script_markup": {
+      "toolCalls": [
+        {
+          "id": "dr-f4",
+          "name": "submit_review_reply_draft",
+          "arguments": {
+            "replyText": "<script>alert('xss')</script>Thank you."
+          }
+        }
+      ],
+      "finishReason": "tool_calls"
+    },
+    "bold_markup": {
+      "toolCalls": [
+        {
+          "id": "dr-f5",
+          "name": "submit_review_reply_draft",
+          "arguments": {
+            "replyText": "<b>Thank you</b> for your feedback."
+          }
+        }
+      ],
+      "finishReason": "tool_calls"
+    },
+    "null_character": {
+      "toolCalls": [
+        {
+          "id": "dr-f6",
+          "name": "submit_review_reply_draft",
+          "arguments": {
+            "replyText": "Thank you\u0000for your feedback."
+          }
+        }
+      ],
+      "finishReason": "tool_calls"
+    },
+    "control_char": {
+      "toolCalls": [
+        {
+          "id": "dr-f7",
+          "name": "submit_review_reply_draft",
+          "arguments": {
+            "replyText": "Thank you\u0007for your feedback."
+          }
+        }
+      ],
+      "finishReason": "tool_calls"
+    },
+    "wrong_tool_name": {
+      "toolCalls": [
+        {
+          "id": "dr-f8",
+          "name": "submit_review_reply",
+          "arguments": {
+            "replyText": "Thank you."
+          }
+        }
+      ],
+      "finishReason": "tool_calls"
+    },
+    "zero_tool_calls": {
+      "content": "Here is a draft reply: Thank you for your feedback.",
+      "toolCalls": [],
+      "finishReason": "stop"
+    },
+    "multiple_tool_calls": {
+      "toolCalls": [
+        {
+          "id": "dr-f9a",
+          "name": "submit_review_reply_draft",
+          "arguments": {
+            "replyText": "Thank you."
+          }
+        },
+        {
+          "id": "dr-f9b",
+          "name": "submit_review_reply_draft",
+          "arguments": {
+            "replyText": "We appreciate it."
+          }
+        }
+      ],
+      "finishReason": "tool_calls"
+    },
+    "missing_reply_text": {
+      "toolCalls": [
+        {
+          "id": "dr-f10",
+          "name": "submit_review_reply_draft",
+          "arguments": {}
+        }
+      ],
+      "finishReason": "tool_calls"
+    },
+    "non_string_reply": {
+      "toolCalls": [
+        {
+          "id": "dr-f11",
+          "name": "submit_review_reply_draft",
+          "arguments": {
+            "replyText": 123
+          }
+        }
+      ],
+      "finishReason": "tool_calls"
+    },
+    "malformed_arguments": {
+      "toolCalls": [
+        {
+          "id": "dr-f12",
+          "name": "submit_review_reply_draft",
+          "arguments": "Thank you"
+        }
+      ],
+      "finishReason": "tool_calls"
+    },
+    "whitespace_only": {
+      "toolCalls": [
+        {
+          "id": "dr-f13",
+          "name": "submit_review_reply_draft",
+          "arguments": {
+            "replyText": "   \n\t  "
+          }
+        }
+      ],
+      "finishReason": "tool_calls"
+    }
+  },
+  "llm_failure": {
+    "code": "HTTP_ERROR",
+    "message": "FAKE-PROVIDER-ERROR-MARKER upstream timeout"
+  }
+}

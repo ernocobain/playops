@@ -1,0 +1,38 @@
+# PlayOps example configuration.
+# Copy to config/playops.yaml and fill in local values.
+# config/playops.yaml is git-ignored. NEVER commit credentials.
+
+# Google Play target application.
+google_play:
+  package_name: "com.example.app" # Android package name
+  service_account_json: "" # Absolute path to service-account JSON (outside repo)
+
+# Agent runtime (Phase 2).
+agent:
+  max_steps: 20 # Agent loop step guard
+  approval_timeout_seconds: 300 # CLI approval prompt timeout
+
+# App health thresholds (Phase 5).
+health:
+  crash_rate_threshold: 0.01 # Fraction of sessions
+  anr_rate_threshold: 0.005
+
+# Audit log (Phase 0.6).
+audit:
+  log_path: "./logs/playops.audit.jsonl" # Append-only JSONL audit log
+
+# Review Agent (Phase 3.5).
+review:
+  checkpoint_path: "./data/reviews/checkpoint.json" # Ingestion state persistence
+
+# Release Agent (Phase 4.2).
+release:
+  edit_session_path: "./data/releases/edit-session.json" # Locally tracked Play edit session
+  edit_cleanup_journal_path: "./data/releases/edit-cleanup-journal.json" # Phase 4.15 known edit records
+
+# LLM provider (Phase 3.5).
+llm:
+  nine_router:
+    base_url: "http://127.0.0.1:20128/v1" # OpenAI-compatible endpoint
+    model: "gpt-4o-mini" # Opaque model identifier
+    # api_key: "" # Optional; set via PLAYOPS_LLM_9ROUTER_API_KEY env var
