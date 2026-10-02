@@ -11,8 +11,10 @@ import {
   createPlayReportingClient,
   getAnrRateMetricSet,
   getCrashRateMetricSet,
+  getExcessiveWakeupRateMetricSet,
   queryAnrRate,
   queryCrashRate,
+  queryExcessiveWakeupRate,
   type MetricsRow,
   type PlayReportingClient,
   type ReportingClientFactory,
@@ -62,6 +64,16 @@ function clientWith(vitals: Partial<FakeVitals> = {}): {
     crashrate: {
       get: makeVerb("crash.get", state.getData) as VitalsResourceLike["crashrate"]["get"],
       query: makeVerb("crash.query", state.queryData) as VitalsResourceLike["crashrate"]["query"],
+    },
+    excessivewakeuprate: {
+      get: makeVerb(
+        "wakeup.get",
+        state.getData,
+      ) as VitalsResourceLike["excessivewakeuprate"]["get"],
+      query: makeVerb(
+        "wakeup.query",
+        state.queryData,
+      ) as VitalsResourceLike["excessivewakeuprate"]["query"],
     },
   };
   return { client: { version: "v1beta1", vitals: resource }, calls: state.calls };
@@ -377,5 +389,79 @@ describe("query validation", () => {
     await expect(queryAnrRate(client, { packageName: PKG })).rejects.toMatchObject({
       code: "INVALID_RESPONSE",
     });
+  });
+});
+
+describe("Phase 5.1 excessive wakeup rate metric set", () => {
+  it("builds the excessiveWakeupRateMetricSet name and returns metric-set data", async () => {
+    const name = `apps/${PKG}/excessiveWakeupRateMetricSet`;
+    const { client, calls } = clientWith({
+      getData: { name, freshnessInfo: { freshnesses: [] } },
+    });
+
+    const result = await getExcessiveWakeupRateMetricSet(client, PKG);
+
+    expect(calls).toEqual([{ kind: "wakeup.get", params: { name } }]);
+    expect(result.name).toBe(name);
+    expect(result.freshnessInfo).toEqual({ freshnesses: [] });
+  });
+
+  it("queries the exact resource with the exact request and keeps one call per page", async () => {
+    const name = `apps/${PKG}/excessiveWakeupRateMetricSet`;
+    const { client, calls } = clientWith({
+      queryData: { rows: [{ metrics: [{ metric: "excessiveWakeupRate" }] }], nextPageToken: "W2" },
+    });
+
+    const result = await queryExcessiveWakeupRate(client, {
+      packageName: PKG,
+      timelineSpec: TIMELINE,
+      dimensions: ["versionCode"],
+      metrics: ["excessiveWakeupRate", "distinctUsers"],
+      pageSize: 1000,
+    });
+
+    const params = calls[0]?.params as { name: string; requestBody: Record<string, unknown> };
+    expect(calls[0]?.kind).toBe("wakeup.query");
+    expect(params.name).toBe(name);
+    expect(params.requestBody).toEqual({
+      timelineSpec: TIMELINE,
+      dimensions: ["versionCode"],
+      metrics: ["excessiveWakeupRate", "distinctUsers"],
+      pageSize: 1000,
+    });
+    expect(result.rows).toHaveLength(1);
+    expect(result.nextPageToken).toBe("W2");
+  });
+
+  it("retries a transient 503 on the excessive-wakeup query with the read policy", async () => {
+    const { client } = clientWith();
+    let calls = 0;
+    const retrySettings: unknown[] = [];
+    client.vitals.excessivewakeuprate.query = (_params, options) => {
+      retrySettings.push(options);
+      return ++calls === 1
+        ? Promise.reject({ response: { status: 503 } })
+        : Promise.resolve({ data: { rows: [] } });
+    };
+
+    expect(
+      await queryExcessiveWakeupRate(
+        client,
+        { packageName: PKG },
+        { sleep: () => Promise.resolve() },
+      ),
+    ).toEqual({ rows: [] });
+    expect(calls).toBe(2);
+    expect(retrySettings).toEqual([{ retry: false }, { retry: false }]);
+  });
+
+  it("rejects blank packageName and invalid pageSize for the excessive-wakeup path", async () => {
+    const { client } = clientWith();
+    await expect(getExcessiveWakeupRateMetricSet(client, " ")).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+    });
+    await expect(
+      queryExcessiveWakeupRate(client, { packageName: PKG, pageSize: 100_001 }),
+    ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
   });
 });

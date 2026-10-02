@@ -6,9 +6,11 @@
  * authenticated client from Phase 1.1; never reads credential files, config,
  * or env, and never performs token acquisition or scope management.
  *
- * Phase 1.3 scope: vitals.anrrate.{get,query} and vitals.crashrate.{get,query}
- * ONLY. No error issues/reports, no other vitals metric sets, no anomalies,
- * no health analysis — that belongs to Phase 5.
+ * Phase 1.3 scope: vitals.anrrate.{get,query} and vitals.crashrate.{get,query}.
+ * Phase 5.1 adds exactly one more metric set —
+ * vitals.excessivewakeuprate.{get,query} — plus nothing else. No error
+ * issues/reports, no other vitals metric sets, no anomalies, no health
+ * analysis — analysis belongs to Phase 5.2+.
  *
  * Pagination: one PlayOps query call = one Google API page; nextPageToken is
  * exposed explicitly (no automatic fetch-everything loop).
@@ -48,11 +50,15 @@ export type AnrRateMetricSet =
   playdeveloperreporting_v1beta1.Schema$GooglePlayDeveloperReportingV1beta1AnrRateMetricSet;
 export type CrashRateMetricSet =
   playdeveloperreporting_v1beta1.Schema$GooglePlayDeveloperReportingV1beta1CrashRateMetricSet;
+export type ExcessiveWakeupRateMetricSet =
+  playdeveloperreporting_v1beta1.Schema$GooglePlayDeveloperReportingV1beta1ExcessiveWakeupRateMetricSet;
 
 type AnrQueryRequest =
   playdeveloperreporting_v1beta1.Schema$GooglePlayDeveloperReportingV1beta1QueryAnrRateMetricSetRequest;
 type CrashQueryRequest =
   playdeveloperreporting_v1beta1.Schema$GooglePlayDeveloperReportingV1beta1QueryCrashRateMetricSetRequest;
+type ExcessiveWakeupQueryRequest =
+  playdeveloperreporting_v1beta1.Schema$GooglePlayDeveloperReportingV1beta1QueryExcessiveWakeupRateMetricSetRequest;
 
 export interface QueryVitalsInput {
   packageName: string;
@@ -96,6 +102,23 @@ export interface VitalsResourceLike {
       options?: { retry: false },
     ): Promise<{ data: { rows?: MetricsRow[]; nextPageToken?: string | null } }>;
   };
+  /**
+   * Phase 5.1 addition: the excessive-wakeup metric set is queryable in the
+   * installed v1beta1 surface (`apps/{app}/excessiveWakeupRateMetricSet`).
+   */
+  excessivewakeuprate: {
+    get(
+      params: { name: string },
+      options?: { retry: false },
+    ): Promise<{ data: ExcessiveWakeupRateMetricSet }>;
+    query(
+      params: {
+        name: string;
+        requestBody: ExcessiveWakeupQueryRequest;
+      },
+      options?: { retry: false },
+    ): Promise<{ data: { rows?: MetricsRow[]; nextPageToken?: string | null } }>;
+  };
 }
 
 export interface PlayReportingClient {
@@ -130,6 +153,7 @@ export function createPlayReportingClient(
 
 const ANR_RATE_METRIC_SET_SUFFIX = "anrRateMetricSet";
 const CRASH_RATE_METRIC_SET_SUFFIX = "crashRateMetricSet";
+const EXCESSIVE_WAKEUP_RATE_METRIC_SET_SUFFIX = "excessiveWakeupRateMetricSet";
 
 function requirePackageName(value: string, operation: string): string {
   if (typeof value !== "string" || value.trim() === "") {
@@ -251,6 +275,30 @@ export async function getCrashRateMetricSet(
   }
 }
 
+/** Get the excessive wakeup rate metric set for an app (Phase 5.1). */
+export async function getExcessiveWakeupRateMetricSet(
+  client: PlayReportingClient,
+  packageName: string,
+  retryOptions?: ReadRetryOptions,
+): Promise<ExcessiveWakeupRateMetricSet> {
+  const operation = "vitals.excessivewakeuprate.get";
+  const name = metricSetName(
+    requirePackageName(packageName, operation),
+    EXCESSIVE_WAKEUP_RATE_METRIC_SET_SUFFIX,
+  );
+  try {
+    const response = await executeWithRetry(
+      () => client.vitals.excessivewakeuprate.get({ name }, { retry: false }),
+      { ...retryOptions, safety: "read" },
+    );
+    requireObjectPayload(response.data, operation);
+    return response.data;
+  } catch (cause) {
+    if (cause instanceof ReportingError) throw cause;
+    throw wrapApiError(operation, name, cause);
+  }
+}
+
 function validateQueryInput(input: QueryVitalsInput, operation: string): QueryVitalsInput {
   const packageName = requirePackageName(input.packageName, operation);
   const pageToken = optionalNonBlank(input.pageToken, "pageToken", operation);
@@ -315,6 +363,35 @@ export async function queryAnrRate(
           {
             name,
             requestBody: requestBody as AnrQueryRequest,
+          },
+          { retry: false },
+        ),
+      { ...retryOptions, safety: "read" },
+    );
+    return normalizeQueryResponse(response.data, operation);
+  } catch (cause) {
+    if (cause instanceof ReportingError) throw cause;
+    throw wrapApiError(operation, name, cause);
+  }
+}
+
+/** Query the excessive wakeup rate metric set (Phase 5.1). One call = one page. */
+export async function queryExcessiveWakeupRate(
+  client: PlayReportingClient,
+  input: QueryVitalsInput,
+  retryOptions?: ReadRetryOptions,
+): Promise<QueryVitalsResult> {
+  const operation = "vitals.excessivewakeuprate.query";
+  const validated = validateQueryInput(input, operation);
+  const name = metricSetName(validated.packageName, EXCESSIVE_WAKEUP_RATE_METRIC_SET_SUFFIX);
+  const { packageName: _packageName, ...requestBody } = validated;
+  try {
+    const response = await executeWithRetry(
+      () =>
+        client.vitals.excessivewakeuprate.query(
+          {
+            name,
+            requestBody: requestBody as ExcessiveWakeupQueryRequest,
           },
           { retry: false },
         ),
