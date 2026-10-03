@@ -3,6 +3,7 @@ import { writeSync } from "node:fs";
 import { loadConfig } from "../config/loader.js";
 import type { PlayOpsConfig } from "../config/types.js";
 import { createLogger, DEFAULT_LOG_LEVEL, type LogSink } from "../logging/index.js";
+import { toOperatorError } from "../errors/index.js";
 
 export interface CliLoggingDeps {
   readonly loadConfig?: () => Pick<PlayOpsConfig, "logging">;
@@ -27,7 +28,7 @@ export async function runCliWithLogging(
   const command = COMMANDS.find((name) => name === args[0]);
   const quiet =
     command === undefined || args.includes("--help") || (args.length === 1 && command !== "doctor");
-  const diagnose = (exitCode: CliExitCode): void => {
+  const diagnose = (exitCode: CliExitCode, cause?: unknown): void => {
     if (quiet) return;
     let level = DEFAULT_LOG_LEVEL;
     try {
@@ -47,7 +48,18 @@ export async function runCliWithLogging(
             writeSync(2, line);
           }),
       });
-      const context = { command, exitCode };
+      // Phase 6.3: a thrown failure contributes only its allowlisted taxonomy
+      // metadata (category/code/externalStateUncertain) — never its message,
+      // stack, cause, or any raw error data.
+      const context: Record<string, unknown> = { command, exitCode };
+      if (cause !== undefined) {
+        const presented = toOperatorError(cause);
+        context.category = presented.category;
+        context.code = presented.code;
+        if (presented.externalStateUncertain !== undefined) {
+          context.externalStateUncertain = presented.externalStateUncertain;
+        }
+      }
       if (exitCode === 0) logger.info("CLI command completed.", context);
       else if (exitCode === 2) logger.warn("CLI command declined.", context);
       else logger.error("CLI command failed.", context);
@@ -59,7 +71,7 @@ export async function runCliWithLogging(
   try {
     exitCode = await run();
   } catch (cause) {
-    diagnose(1);
+    diagnose(1, cause);
     throw cause; // Preserve operation/audit failures exactly, not as log data.
   }
   diagnose(exitCode);
