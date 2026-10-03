@@ -35,7 +35,11 @@ function configWith(path: string): PlayOpsConfig {
   return {
     googlePlay: { packageName: "com.example.app", serviceAccountJson: path },
     agent: { maxSteps: 20, approvalTimeoutSeconds: 300 },
-    health: { crashRateThreshold: 0.01, anrRateThreshold: 0.005 },
+    health: {
+      crashRateReportedThreshold: null,
+      anrRateReportedThreshold: null,
+      excessiveWakeupRateReportedThreshold: null,
+    },
     audit: { logPath: "./logs/playops.audit.jsonl" },
     review: { checkpointPath: "" },
     release: { editSessionPath: "", editCleanupJournalPath: "" },

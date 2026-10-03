@@ -39,7 +39,11 @@ const PACKAGE = "com.example.app";
 const CONFIG: PlayOpsConfig = {
   googlePlay: { packageName: PACKAGE, serviceAccountJson: "/outside-repo/fake-credentials.json" },
   agent: { maxSteps: 20, approvalTimeoutSeconds: 300 },
-  health: { crashRateThreshold: 0.01, anrRateThreshold: 0.005 },
+  health: {
+    crashRateReportedThreshold: null,
+    anrRateReportedThreshold: null,
+    excessiveWakeupRateReportedThreshold: null,
+  },
   audit: { logPath: "./logs/playops.audit.jsonl" },
   review: { checkpointPath: "" },
   release: { editSessionPath: "", editCleanupJournalPath: "" },

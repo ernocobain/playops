@@ -11,7 +11,11 @@ export class ConfigError extends Error {
   constructor(
     message: string,
     readonly code:
-      "CONFIG_NOT_FOUND" | "CONFIG_MALFORMED_YAML" | "CONFIG_INVALID_TYPE" | "CONFIG_INVALID_VALUE",
+      | "CONFIG_NOT_FOUND"
+      | "CONFIG_MALFORMED_YAML"
+      | "CONFIG_INVALID_TYPE"
+      | "CONFIG_INVALID_VALUE"
+      | "CONFIG_MIGRATION_REQUIRED",
   ) {
     super(message);
   }

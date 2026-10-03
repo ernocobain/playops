@@ -23,7 +23,7 @@ google_play:
 agent:
   max_steps: 42
 health:
-  crash_rate_threshold: 0.5
+  crash_rate_reported_threshold: "0.5"
 audit:
   log_path: "./from-file.jsonl"
 `;
@@ -61,8 +61,9 @@ describe("loadConfig", () => {
     expect(config.agent.maxSteps).toBe(42);
     // untouched sections keep defaults
     expect(config.agent.approvalTimeoutSeconds).toBe(DEFAULT_CONFIG.agent.approvalTimeoutSeconds);
-    expect(config.health.crashRateThreshold).toBe(0.5);
-    expect(config.health.anrRateThreshold).toBe(DEFAULT_CONFIG.health.anrRateThreshold);
+    expect(config.health.crashRateReportedThreshold).toBe("0.5");
+    expect(config.health.anrRateReportedThreshold).toBeNull();
+    expect(config.health.excessiveWakeupRateReportedThreshold).toBeNull();
     expect(config.audit.logPath).toBe("./from-file.jsonl");
   });
 
@@ -158,7 +159,7 @@ describe("loadConfig", () => {
     }
   });
 
-  it("throws CONFIG_INVALID_VALUE on an out-of-range value", () => {
+  it("throws CONFIG_MIGRATION_REQUIRED on a retired numeric threshold", () => {
     const path = join(dir, "range.yaml");
     writeFileSync(path, "health:\n  crash_rate_threshold: 1.5\n");
 
@@ -167,7 +168,7 @@ describe("loadConfig", () => {
       expect.unreachable("should have thrown");
     } catch (error) {
       expect(error).toBeInstanceOf(ConfigError);
-      expect((error as ConfigError).code).toBe("CONFIG_INVALID_VALUE");
+      expect((error as ConfigError).code).toBe("CONFIG_MIGRATION_REQUIRED");
     }
   });
 

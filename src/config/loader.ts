@@ -1,5 +1,5 @@
 /**
- * PlayOps configuration loader (Phase 0.5 + Phase 3.5).
+ * PlayOps configuration loader (Phase 0.5 + Phase 3.5 + Phase 5.4 migration).
  *
  * Precedence (highest wins): environment variables > config file > defaults.
  *
@@ -12,6 +12,11 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { ConfigError } from "./errors.js";
+import {
+  HEALTH_THRESHOLD_FIELDS,
+  healthThresholdEnvOverrides,
+  parseHealthThresholdConfig,
+} from "./health.js";
 import { DEFAULT_CONFIG, type PartialPlayOpsConfig, type PlayOpsConfig } from "./types.js";
 
 export const DEFAULT_CONFIG_PATH = "config/playops.yaml";
@@ -22,8 +27,10 @@ export const ENV_VARS = {
   serviceAccountJson: "PLAYOPS_GOOGLE_PLAY_SERVICE_ACCOUNT_JSON",
   maxSteps: "PLAYOPS_AGENT_MAX_STEPS",
   approvalTimeoutSeconds: "PLAYOPS_AGENT_APPROVAL_TIMEOUT_SECONDS",
-  crashRateThreshold: "PLAYOPS_HEALTH_CRASH_RATE_THRESHOLD",
-  anrRateThreshold: "PLAYOPS_HEALTH_ANR_RATE_THRESHOLD",
+  crashRateReportedThreshold: HEALTH_THRESHOLD_FIELDS.crashRateReportedThreshold.env,
+  anrRateReportedThreshold: HEALTH_THRESHOLD_FIELDS.anrRateReportedThreshold.env,
+  excessiveWakeupRateReportedThreshold:
+    HEALTH_THRESHOLD_FIELDS.excessiveWakeupRateReportedThreshold.env,
   logPath: "PLAYOPS_AUDIT_LOG_PATH",
   reviewCheckpointPath: "PLAYOPS_REVIEW_CHECKPOINT_PATH",
   releaseEditSessionPath: "PLAYOPS_RELEASE_EDIT_SESSION_PATH",
@@ -84,12 +91,9 @@ export function parseConfigYaml(yamlText: string): PartialPlayOpsConfig {
   let doc: unknown;
   try {
     doc = parseYaml(yamlText);
-  } catch (cause) {
+  } catch {
     // Generic message; YAML raw content is never echoed (secrets may be in it).
-    throw new ConfigError(
-      `Malformed YAML: ${cause instanceof Error ? cause.message : String(cause)}`,
-      "CONFIG_MALFORMED_YAML",
-    );
+    throw new ConfigError("Malformed YAML configuration.", "CONFIG_MALFORMED_YAML");
   }
   if (doc === null || doc === undefined) return {};
   if (!isPlainObject(doc)) {
@@ -138,22 +142,7 @@ export function parseConfigYaml(yamlText: string): PartialPlayOpsConfig {
     result.agent = agentSection;
   }
 
-  const crashRateThreshold = readNumber(health, "crash_rate_threshold", "health");
-  const anrRateThreshold = readNumber(health, "anr_rate_threshold", "health");
-  if (crashRateThreshold !== undefined || anrRateThreshold !== undefined) {
-    for (const [name, value] of [
-      ["crash_rate_threshold", crashRateThreshold],
-      ["anr_rate_threshold", anrRateThreshold],
-    ] as const) {
-      if (value !== undefined && (value < 0 || value > 1)) {
-        throw new ConfigError(`health.${name} must be between 0 and 1`, "CONFIG_INVALID_VALUE");
-      }
-    }
-    const healthSection: Partial<PlayOpsConfig["health"]> = {};
-    if (crashRateThreshold !== undefined) healthSection.crashRateThreshold = crashRateThreshold;
-    if (anrRateThreshold !== undefined) healthSection.anrRateThreshold = anrRateThreshold;
-    result.health = healthSection;
-  }
+  if (doc.health !== undefined) result.health = parseHealthThresholdConfig(health, "yaml");
 
   const logPath = readString(audit, "log_path", "audit");
   if (logPath !== undefined) {
@@ -201,6 +190,8 @@ function parseEnvNumber(name: string, raw: string): number {
 /** Extract env-var overrides into a partial config. */
 export function envOverrides(env: Record<string, string | undefined>): PartialPlayOpsConfig {
   const result: PartialPlayOpsConfig = {};
+  const healthOverrides = healthThresholdEnvOverrides(env);
+  if (Object.keys(healthOverrides).length > 0) result.health = healthOverrides;
 
   const packageName = env[ENV_VARS.packageName];
   const serviceAccountJson = env[ENV_VARS.serviceAccountJson];
@@ -222,17 +213,6 @@ export function envOverrides(env: Record<string, string | undefined>): PartialPl
         approvalTimeout,
       );
     result.agent = agentSection;
-  }
-
-  const crashRate = env[ENV_VARS.crashRateThreshold];
-  const anrRate = env[ENV_VARS.anrRateThreshold];
-  if (crashRate !== undefined || anrRate !== undefined) {
-    const healthSection: Partial<PlayOpsConfig["health"]> = {};
-    if (crashRate !== undefined)
-      healthSection.crashRateThreshold = parseEnvNumber(ENV_VARS.crashRateThreshold, crashRate);
-    if (anrRate !== undefined)
-      healthSection.anrRateThreshold = parseEnvNumber(ENV_VARS.anrRateThreshold, anrRate);
-    result.health = healthSection;
   }
 
   const logPath = env[ENV_VARS.logPath];

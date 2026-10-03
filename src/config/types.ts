@@ -1,5 +1,5 @@
 /**
- * PlayOps configuration types (Phase 0.5 + Phase 3.5).
+ * PlayOps configuration types (Phase 0.5 + Phase 3.5 + Phase 5.4 migration).
  *
  * Only settings required by the current roadmap phases are defined here.
  * Do not add speculative settings without a concrete phase needing them.
@@ -20,10 +20,12 @@ export interface AgentConfig {
 }
 
 export interface HealthConfig {
-  /** Crash-rate alert threshold, fraction of sessions (Phase 5). */
-  crashRateThreshold: number;
-  /** ANR-rate alert threshold, fraction of sessions (Phase 5). */
-  anrRateThreshold: number;
+  /** Exact Reporting decimal scale; no percent conversion. Null disables the rule. */
+  crashRateReportedThreshold: string | null;
+  /** Exact Reporting decimal scale; no percent conversion. Null disables the rule. */
+  anrRateReportedThreshold: string | null;
+  /** Exact Reporting decimal scale; no percent conversion. Null disables the rule. */
+  excessiveWakeupRateReportedThreshold: string | null;
 }
 
 export interface AuditConfig {
@@ -98,8 +100,9 @@ export const DEFAULT_CONFIG: PlayOpsConfig = {
     approvalTimeoutSeconds: 300,
   },
   health: {
-    crashRateThreshold: 0.01,
-    anrRateThreshold: 0.005,
+    crashRateReportedThreshold: null,
+    anrRateReportedThreshold: null,
+    excessiveWakeupRateReportedThreshold: null,
   },
   audit: {
     logPath: "./logs/playops.audit.jsonl",

@@ -1,15 +1,18 @@
 /**
- * Phase 5.1 health composition root.
+ * Phase 5 health composition root.
  *
  * Registers the three read-only App Health metric tools in the real Phase 2
  * runtime over one Phase 1.1 auth client and one existing Phase 1.3 Reporting
- * client — no second Google auth or client path, no CLI command (Phase 5.3 owns
- * `health report`), no thresholds or alert configuration (Phase 5.4).
+ * client — no second Google auth or client path. The Phase 5.2 comparison and
+ * Phase 5.4 threshold capability reuse that gateway; the descriptive report
+ * still invokes only comparison. Threshold alerts are internal audit entries.
  *
  * Only composition knows the package identity, the Reporting client and the
- * audit ledger; domain modules stay ignorant of config, environment and streams.
+ * audit ledger; the evaluator consumes validated rules/normalized data without
+ * environment, credential files or streams.
  */
 import { loadConfig, loadServiceAccountCredentials, type PlayOpsConfig } from "../config/index.js";
+import { parseHealthThresholdConfig } from "../config/health.js";
 import {
   createGoogleAuthClient,
   PLAY_DEVELOPER_REPORTING_SCOPE,
@@ -26,6 +29,8 @@ import { HEALTH_METRIC_KINDS, HEALTH_METRIC_SPECS, HealthError } from "./index.j
 import type { HealthMetricGateway } from "./gateway.js";
 import { createReportingHealthMetricGateway } from "./reporting.js";
 import { createHealthMetricTool, type HealthMetricTool } from "./tools.js";
+import { createHealthThresholdTool, type HealthThresholdTool } from "./threshold-tool.js";
+import { HEALTH_THRESHOLDS_TOOL_NAME } from "./thresholds.js";
 
 /** Fixed-message configuration failure; raw values, paths and keys are never echoed. */
 export class HealthCompositionError extends Error {
@@ -55,6 +60,8 @@ export function validateHealthConfig(config: PlayOpsConfig): void {
   if (!config.audit || typeof config.audit.logPath !== "string" || !config.audit.logPath.trim()) {
     invalid("audit.log_path");
   }
+  // Embedded/typed configs are as strict as YAML/env; before credential reads.
+  parseHealthThresholdConfig(config.health);
 }
 
 export interface HealthComposition {
@@ -66,6 +73,8 @@ export interface HealthComposition {
   readonly tools: readonly HealthMetricTool[];
   /** Phase 5.2 baseline-comparison tool. */
   readonly comparisonTool: HealthComparisonTool;
+  /** Separate Phase 5.4 capability; never executed by health report. */
+  readonly thresholdTool: HealthThresholdTool;
 }
 
 /** Shared construction for production and fake-only tests; one Reporting client. */
@@ -93,19 +102,30 @@ export function createHealthComposition(
   const comparisonTool = createHealthComparisonTool({
     gateway: deps.comparisonGateway ?? gateway,
   });
+  const thresholdTool = createHealthThresholdTool({
+    health: config.health,
+    gateway,
+    auditLogPath: config.audit.logPath,
+  });
   const registry = new ToolRegistry();
   for (const entry of tools) {
     registry.register(entry.tool);
   }
   registry.register(comparisonTool.tool);
+  registry.register(thresholdTool.tool);
   return Object.freeze({
     packageName,
     gateway,
     registry,
-    bindings: Object.freeze([...tools.map((entry) => entry.binding), comparisonTool.binding]),
+    bindings: Object.freeze([
+      ...tools.map((entry) => entry.binding),
+      comparisonTool.binding,
+      thresholdTool.binding,
+    ]),
     ledger: createFileAgentLedger(config.audit.logPath),
     tools,
     comparisonTool,
+    thresholdTool,
   });
 }
 
@@ -139,4 +159,5 @@ export const HEALTH_METRIC_TOOL_NAMES: readonly string[] = Object.freeze(
 export const HEALTH_TOOL_NAMES: readonly string[] = Object.freeze([
   ...HEALTH_METRIC_TOOL_NAMES,
   HEALTH_COMPARISON_TOOL_NAME,
+  HEALTH_THRESHOLDS_TOOL_NAME,
 ]);

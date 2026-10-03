@@ -5,7 +5,7 @@
  * line, newline-terminated. Writes only ever append; the file is never
  * truncated, rewritten, or compacted by this module.
  */
-import { appendFileSync, mkdirSync, openSync, closeSync, readFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, openSync, closeSync, readFileSync, fsyncSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
 import { AuditError } from "./errors.js";
@@ -19,8 +19,16 @@ import type { AuditEntry, NewAuditEntry } from "./types.js";
  * - Appends a single newline-terminated JSON line; never truncates.
  * - Metadata is sanitized (secrets redacted) before writing.
  * - Returns the entry exactly as written (id/timestamp filled in).
+ * - Optional durable mode (Phase 5.4): fsync the file and its containing directory
+ *   before returning. Unsupported/failed sync fails closed with AUDIT_WRITE_FAILED.
+ *   Ordinary runtime audit calls retain their established behavior. This is not
+ *   a multi-entry transaction or a guarantee about newly-created ancestor directories.
  */
-export function appendAuditEntry(logPath: string, entry: NewAuditEntry): AuditEntry {
+export function appendAuditEntry(
+  logPath: string,
+  entry: NewAuditEntry,
+  options: { readonly durable?: boolean } = {},
+): AuditEntry {
   const written: AuditEntry = {
     id: randomUUID(),
     timestamp: entry.timestamp ?? new Date().toISOString(),
@@ -38,8 +46,17 @@ export function appendAuditEntry(logPath: string, entry: NewAuditEntry): AuditEn
     const fd = openSync(logPath, "a");
     try {
       appendFileSync(fd, line, "utf8");
+      if (options.durable) fsyncSync(fd);
     } finally {
       closeSync(fd);
+    }
+    if (options.durable) {
+      const directory = openSync(dirname(logPath), "r");
+      try {
+        fsyncSync(directory);
+      } finally {
+        closeSync(directory);
+      }
     }
   } catch (cause) {
     throw new AuditError(

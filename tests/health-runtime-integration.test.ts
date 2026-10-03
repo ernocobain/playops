@@ -167,6 +167,7 @@ describe("Phase 5.1 health metric tools through the real Phase 2 runtime", () =>
       "health.get_anr_rate",
       "health.get_excessive_wakeups",
       "health.compare_to_baseline",
+      "health.check_thresholds",
     ]);
     for (const tool of composition.registry.list()) {
       expect(tool.permission).toBe("read");
@@ -268,9 +269,10 @@ describe("Phase 5.1 health metric tools through the real Phase 2 runtime", () =>
   it("has no mutation or approval path in the health registry", async () => {
     const { composition } = await runHealth("health.get_crash_rate", VALID_ARGS);
 
-    expect(composition.registry.list()).toHaveLength(4);
+    expect(composition.registry.list()).toHaveLength(5);
     expect(composition.registry.list().every((tool) => tool.permission === "read")).toBe(true);
     expect(composition.bindings.map((binding) => binding.toolName).sort()).toEqual([
+      "health.check_thresholds",
       "health.compare_to_baseline",
       "health.get_anr_rate",
       "health.get_crash_rate",

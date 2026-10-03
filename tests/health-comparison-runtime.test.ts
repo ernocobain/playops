@@ -196,6 +196,7 @@ describe("Phase 5.2 through the real Phase 2 runtime (fake 5.1 gateway)", () => 
       "health.get_anr_rate",
       "health.get_excessive_wakeups",
       HEALTH_COMPARISON_TOOL_NAME,
+      "health.check_thresholds",
     ]);
     const tool = composition.registry.get(HEALTH_COMPARISON_TOOL_NAME);
     expect(tool.permission).toBe("read");
