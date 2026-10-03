@@ -27,4 +27,12 @@ export default tseslint.config(
       ],
     },
   },
+  {
+    // Phase 6.1 packaging contracts and the artifact acceptance harness are
+    // plain Node ESM scripts, so they only need the Node globals they use.
+    files: ["scripts/**/*.mjs"],
+    languageOptions: {
+      globals: { process: "readonly", console: "readonly", URL: "readonly" },
+    },
+  },
 );

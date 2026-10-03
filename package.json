@@ -8,21 +8,23 @@
   "engines": {
     "node": ">=24 <25"
   },
-  "main": "dist/index.js",
   "bin": {
     "playops": "dist/cli/index.js"
   },
   "files": [
-    "dist"
+    "dist/**/*.js",
+    "config/playops.example.yaml"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "prepack": "npm run build",
     "typecheck": "tsc --noEmit -p tsconfig.eslint.json",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "vitest run",
     "test:run": "vitest run",
+    "test:package": "node scripts/package-acceptance.mjs",
     "test:watch": "vitest watch"
   },
   "keywords": [

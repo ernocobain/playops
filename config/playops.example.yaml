@@ -18,8 +18,9 @@ agent:
 # conversion. The API describes percentages of distinct users, but PlayOps does not
 # infer a numeric conversion factor from that wording. There is no recommended value.
 # Syntax only (not a recommendation): crash_rate_reported_threshold: "0.01"
-# Legacy crash_rate_threshold/anr_rate_threshold and their legacy env names are retired;
-# explicit legacy configuration is rejected, never converted or silently reinterpreted.
+# Legacy numeric session-fraction threshold keys and their legacy env names are retired:
+# explicit legacy configuration fails with a migration error and is never converted,
+# silently preserved, or reinterpreted. There is no backward-compatible numeric setting.
 # Env overrides use PLAYOPS_HEALTH_{CRASH_RATE,ANR_RATE,EXCESSIVE_WAKEUP_RATE}_REPORTED_THRESHOLD.
 # Absent env = no override; present env must be an exact non-negative decimal string;
 # blank env is invalid (there is no string "null" env disable sentinel).
