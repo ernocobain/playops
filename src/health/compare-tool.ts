@@ -289,6 +289,11 @@ function createInputSchema(): ToolSchema<HealthComparisonToolInput> {
   };
 }
 
+/** Reuse the authoritative Phase 5.2 validation before CLI composition/I/O. */
+export function parseHealthComparisonInput(value: unknown): HealthComparisonToolInput {
+  return createInputSchema().parse(value);
+}
+
 function checkWindow(value: unknown): boolean {
   if (!isRecord(value)) return false;
   try {

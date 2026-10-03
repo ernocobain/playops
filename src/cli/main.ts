@@ -2,6 +2,7 @@ import { formatDoctorReport, runDoctor, type DoctorDeps } from "../doctor/doctor
 import { createLiveReviewComposition } from "../reviews/composition.js";
 import { runReviewsCli, type ReviewCliIo, type ReviewCompositionFactory } from "./reviews.js";
 import { runReleasesCli, type ReleaseDryRunCliDeps, type ReleaseDryRunCliIo } from "./releases.js";
+import { runHealthCli, type HealthCliDeps } from "./health.js";
 
 export interface CliOutput {
   log(message: string): void;
@@ -25,8 +26,17 @@ export async function runCli(
   output: CliOutput,
   reviewDeps?: ReviewCliDeps,
   releaseDeps?: ReleaseCliDeps,
+  healthDeps?: HealthCliDeps,
 ): Promise<0 | 1 | 2> {
   const command = args[0];
+  if (command === "health") {
+    const io = healthDeps?.io ?? {
+      // CliOutput.log is line-oriented (console.log at the live entrypoint).
+      write: (text: string) => output.log(text.endsWith("\n") ? text.slice(0, -1) : text),
+      writeError: (text: string) => output.error(text),
+    };
+    return runHealthCli(args.slice(1), io, healthDeps);
+  }
   if (command === "reviews") {
     const io = reviewDeps?.io ?? {
       write: (text: string) => output.log(text),
@@ -54,7 +64,7 @@ export async function runCli(
 
   if ((command === "--help" || command === "-h" || command === undefined) && args.length <= 1) {
     output.log(
-      "Usage: playops <command>\n\nCommands:\n  doctor    Verify config, credentials, and Google Play connectivity (read-only)\n  reviews   Triage reviews or prepare, approve, publish and verify a public reply\n  releases  Run an operator-bound release dry-run plan",
+      "Usage: playops <command>\n\nCommands:\n  doctor    Verify config, credentials, and Google Play connectivity (read-only)\n  reviews   Triage reviews or prepare, approve, publish and verify a public reply\n  releases  Run an operator-bound release dry-run plan\n  health    Produce a dated health comparison report (stdout + saved file)",
     );
     return 0;
   }
