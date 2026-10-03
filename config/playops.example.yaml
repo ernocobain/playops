@@ -29,6 +29,12 @@ health:
   anr_rate_reported_threshold: null
   excessive_wakeup_rate_reported_threshold: null
 
+# Structured operational diagnostics (Phase 6.2), NOT the audit log.
+# Minimum severity: debug < info < warn < error; default info.
+# CLI diagnostics go to stderr, never report stdout. Env: PLAYOPS_LOGGING_LEVEL.
+logging:
+  level: info
+
 # Audit log (Phase 0.6).
 audit:
   log_path: "./logs/playops.audit.jsonl" # Append-only JSONL audit log

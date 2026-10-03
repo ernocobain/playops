@@ -25,6 +25,7 @@ export {
   type AgentConfig,
   type HealthConfig,
   type AuditConfig,
+  type LoggingConfig,
   type ReviewConfig,
   type ReleaseConfig,
   type NineRouterConfig,

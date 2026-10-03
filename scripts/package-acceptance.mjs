@@ -11,7 +11,7 @@
  * Nothing here contacts Google, a model provider, or a browser: CLI children run
  * behind a generated network blocker, and every config/credential input is synthetic.
  */
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   cpSync,
@@ -59,15 +59,18 @@ function run(command, args, options = {}) {
 }
 
 function capture(command, args, options = {}) {
-  try {
-    return { status: 0, stdout: run(command, args, options).stdout, stderr: "" };
-  } catch (error) {
-    return {
-      status: typeof error.status === "number" ? error.status : 1,
-      stdout: String(error.stdout ?? ""),
-      stderr: String(error.stderr ?? ""),
-    };
-  }
+  const result = spawnSync(command, args, {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    maxBuffer: 64 * 1024 * 1024,
+    ...options,
+  });
+  if (result.error) throw result.error;
+  return {
+    status: result.status ?? 1,
+    stdout: String(result.stdout ?? ""),
+    stderr: String(result.stderr ?? ""),
+  };
 }
 
 function parsePackJson(stdout) {
@@ -124,7 +127,8 @@ const npmCli = resolve(
 );
 const runtimeBin = dirname(process.execPath);
 const childEnv = (extra = {}) => ({
-  ...process.env,
+  // Never let a real operator's PLAYOPS_* settings enter synthetic acceptance.
+  ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("PLAYOPS_"))),
   PATH: `${runtimeBin}:${process.env.PATH ?? ""}`,
   NODE_ENV: "development",
   PHASE61_NET_TRACE: trace,
@@ -164,13 +168,12 @@ try {
   const tracked = run("git", ["ls-files", "-z"], { cwd: repoRoot })
     .stdout.split("\u0000")
     .filter(Boolean);
-  const added = [
-    "scripts/package-content.mjs",
-    "scripts/package-content.test.mjs",
-    "scripts/package-acceptance.mjs",
-    "tests/package-metadata.test.ts",
-  ];
-  for (const path of [...tracked, ...added]) {
+  // Include current, uncommitted implementation files without copying arbitrary
+  // operator files. The tarball payload is still governed solely by npm files.
+  const added = run("git", ["ls-files", "--others", "--exclude-standard", "-z"], { cwd: repoRoot })
+    .stdout.split("\u0000")
+    .filter((path) => /^(src|tests|scripts)\//u.test(path));
+  for (const path of new Set([...tracked, ...added])) {
     const target = join(source, path);
     mkdirSync(dirname(target), { recursive: true });
     cpSync(join(repoRoot, path), target);
@@ -363,8 +366,22 @@ try {
   const blocked = (argsList, cwd = workdir) =>
     capture(process.execPath, ["--import", blocker, cliPath, ...argsList], { cwd, env: cliEnv });
 
-  const help = capture(binLink, ["--help"], { cwd: workdir, env: cliEnv });
+  const help = capture(binLink, ["--help"], {
+    cwd: workdir,
+    env: { ...cliEnv, NODE_OPTIONS: `--import=${pathToFileURL(blocker).href}` },
+  });
   check("installed bin runs from an unrelated directory and exits 0", help.status === 0);
+  check("installed help remains quiet on stderr", help.stderr === "");
+  check(
+    "packaged runtime contains the standalone logging and shared policy modules",
+    [
+      "dist/logging/index.js",
+      "dist/logging/context.js",
+      "dist/logging/levels.js",
+      "dist/shared/redaction.js",
+      "dist/cli/logging.js",
+    ].every((path) => installedFiles.includes(path)),
+  );
   check(
     "installed bin prints the CLI usage surface",
     /Usage: playops <command>/u.test(help.stdout) &&
@@ -376,6 +393,20 @@ try {
   );
 
   const noConfig = blocked(["doctor"]);
+  let diagnostic = null;
+  try {
+    diagnostic = JSON.parse(noConfig.stderr);
+  } catch {
+    diagnostic = null;
+  }
+  check(
+    "installed doctor diagnostics are one safe stderr JSONL record, not stdout",
+    noConfig.stderr.split("\n").filter(Boolean).length === 1 &&
+      diagnostic?.level === "error" &&
+      JSON.stringify(diagnostic?.context) === '{"command":"doctor","exitCode":1}' &&
+      !noConfig.stdout.includes('"level"') &&
+      !noConfig.stderr.includes(marker),
+  );
   check(
     "installed CLI with no config fails closed at CONFIG",
     noConfig.status === 1 &&
@@ -509,6 +540,7 @@ try {
 
   const evidence = {
     phase: "6.1",
+    compatibilityPhase: "6.2",
     artifact: {
       file: packed.filename,
       sha256: tarballSha256,
@@ -579,9 +611,26 @@ function installedChecksSource() {
     'const tools = await import("playops/dist/runtime/tools/index.js");',
     'const agent = await import("playops/dist/runtime/agent/index.js");',
     'const permissions = await import("playops/dist/runtime/permissions/index.js");',
+    'const logging = await import("playops/dist/logging/index.js");',
     "",
   ];
   const body = [
+    'await record("diagnostic records redact secrets using only installed runtime modules", () => {',
+    "  const lines = [];",
+    '  const marker = "FAKE-PACKAGE-LOG-SECRET";',
+    '  const logger = logging.createLogger({ sink: (line) => { lines.push(line); }, now: () => new Date("2026-10-03T16:00:00.000Z") });',
+    '  logger.debug("Suppressed diagnostic.");',
+    '  logger.info("Installed diagnostic record.", { apiKey: marker, nested: [{ authorization: marker }], error: Object.assign(new Error(marker), { status: 503, code: marker }) });',
+    "  const entry = JSON.parse(lines[0]);",
+    '  return lines.length === 1 && lines[0].endsWith("\\n") && !lines[0].includes(marker) && entry.level === "info" && entry.context.apiKey === "[REDACTED]" && entry.context.error.name === "Error" && entry.context.error.status === 503 && entry.context.error.code === undefined;',
+    "});",
+    'await record("failed diagnostic sinks do not weaken the installed durable audit writer", () => {',
+    '  const logger = logging.createLogger({ sink() { throw new Error("FAKE-SINK-FAILURE"); } });',
+    '  logger.error("Static diagnostic failure.");',
+    '  const path = join(state, "diagnostic-sink-audit.jsonl");',
+    '  const entry = audit.appendAuditEntry(path, { type: "phase62.check", actor: "system", action: "acceptance", status: "success", metadata: { secretToken: "FAKE-SECRET", proofDigest: "kept" } }, { durable: true });',
+    '  return readFileSync(path, "utf8") === JSON.stringify(entry) + "\\n" && entry.metadata.secretToken === "[REDACTED]" && entry.metadata.proofDigest === "kept";',
+    "});",
     'await record("audit appends durably outside the package and redacts secrets", () => {',
     '  const path = join(state, "audit.jsonl");',
     '  audit.appendAuditEntry(path, { type: "phase61.check", actor: "system", action: "acceptance", status: "success", metadata: { proofDigest: "x", secretToken: "y" } }, { durable: true });',

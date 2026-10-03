@@ -1,5 +1,5 @@
 /**
- * PlayOps configuration loader (Phase 0.5 + Phase 3.5 + Phase 5.4 migration).
+ * PlayOps configuration loader (through Phase 6.2 diagnostic logging).
  *
  * Precedence (highest wins): environment variables > config file > defaults.
  *
@@ -12,6 +12,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { ConfigError } from "./errors.js";
+import { isLogLevel, type LogLevel } from "../logging/levels.js";
 import {
   HEALTH_THRESHOLD_FIELDS,
   healthThresholdEnvOverrides,
@@ -32,6 +33,7 @@ export const ENV_VARS = {
   excessiveWakeupRateReportedThreshold:
     HEALTH_THRESHOLD_FIELDS.excessiveWakeupRateReportedThreshold.env,
   logPath: "PLAYOPS_AUDIT_LOG_PATH",
+  loggingLevel: "PLAYOPS_LOGGING_LEVEL",
   reviewCheckpointPath: "PLAYOPS_REVIEW_CHECKPOINT_PATH",
   releaseEditSessionPath: "PLAYOPS_RELEASE_EDIT_SESSION_PATH",
   releaseEditCleanupJournalPath: "PLAYOPS_RELEASE_EDIT_CLEANUP_JOURNAL_PATH",
@@ -48,6 +50,16 @@ export interface LoadConfigOptions {
 }
 
 type RawConfig = Record<string, unknown>;
+
+function readLoggingLevel(value: unknown): LogLevel {
+  if (!isLogLevel(value)) {
+    throw new ConfigError(
+      "logging.level must be debug, info, warn or error.",
+      "CONFIG_INVALID_VALUE",
+    );
+  }
+  return value;
+}
 
 function isPlainObject(value: unknown): value is RawConfig {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -104,6 +116,7 @@ export function parseConfigYaml(yamlText: string): PartialPlayOpsConfig {
   const agent = section(doc, "agent");
   const health = section(doc, "health");
   const audit = section(doc, "audit");
+  const logging = section(doc, "logging");
   const review = section(doc, "review");
   const release = section(doc, "release");
   const llmRoot = section(doc, "llm");
@@ -143,6 +156,9 @@ export function parseConfigYaml(yamlText: string): PartialPlayOpsConfig {
   }
 
   if (doc.health !== undefined) result.health = parseHealthThresholdConfig(health, "yaml");
+
+  const loggingLevel = readString(logging, "level", "logging");
+  if (loggingLevel !== undefined) result.logging = { level: readLoggingLevel(loggingLevel) };
 
   const logPath = readString(audit, "log_path", "audit");
   if (logPath !== undefined) {
@@ -192,6 +208,9 @@ export function envOverrides(env: Record<string, string | undefined>): PartialPl
   const result: PartialPlayOpsConfig = {};
   const healthOverrides = healthThresholdEnvOverrides(env);
   if (Object.keys(healthOverrides).length > 0) result.health = healthOverrides;
+
+  const loggingLevel = env[ENV_VARS.loggingLevel];
+  if (loggingLevel !== undefined) result.logging = { level: readLoggingLevel(loggingLevel) };
 
   const packageName = env[ENV_VARS.packageName];
   const serviceAccountJson = env[ENV_VARS.serviceAccountJson];
@@ -254,6 +273,7 @@ function merge(base: PlayOpsConfig, override: PartialPlayOpsConfig): PlayOpsConf
     agent: { ...base.agent, ...override.agent },
     health: { ...base.health, ...override.health },
     audit: { ...base.audit, ...override.audit },
+    logging: { ...base.logging, ...override.logging },
     review: { ...base.review, ...override.review },
     release: { ...base.release, ...override.release },
     llm: {

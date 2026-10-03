@@ -9,28 +9,8 @@
  * not a general security framework.
  */
 
-export const REDACTED = "[REDACTED]";
-
-/** Sensitive key fragments; normalized (lowercase, separators stripped) before matching. */
-const SENSITIVE_KEYS = [
-  "authorization",
-  "token",
-  "accesstoken",
-  "refreshtoken",
-  "password",
-  "secret",
-  "privatekey",
-  "clientsecret",
-] as const;
-
-function normalizeKey(key: string): string {
-  return key.toLowerCase().replace(/[-_]/g, "");
-}
-
-function isSensitiveKey(key: string): boolean {
-  const normalized = normalizeKey(key);
-  return SENSITIVE_KEYS.some((s) => normalized === s || normalized.endsWith(s));
-}
+import { isSensitiveKey, REDACTED } from "../shared/redaction.js";
+export { REDACTED } from "../shared/redaction.js";
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);

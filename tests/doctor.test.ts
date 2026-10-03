@@ -33,6 +33,7 @@ function goodConfig(overrides: Partial<PlayOpsConfig["googlePlay"]> = {}): PlayO
       excessiveWakeupRateReportedThreshold: null,
     },
     audit: { logPath: "./logs/playops.audit.jsonl" },
+    logging: { level: "info" },
     review: { checkpointPath: "" },
     release: { editSessionPath: "", editCleanupJournalPath: "" },
     llm: { nineRouter: { baseUrl: "", model: "" } },

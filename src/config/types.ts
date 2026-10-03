@@ -1,9 +1,10 @@
 /**
- * PlayOps configuration types (Phase 0.5 + Phase 3.5 + Phase 5.4 migration).
+ * PlayOps configuration types (through Phase 6.2 diagnostic logging).
  *
  * Only settings required by the current roadmap phases are defined here.
  * Do not add speculative settings without a concrete phase needing them.
  */
+import { DEFAULT_LOG_LEVEL, type LogLevel } from "../logging/levels.js";
 
 export interface GooglePlayConfig {
   /** Android package name, e.g. "com.example.app". */
@@ -31,6 +32,11 @@ export interface HealthConfig {
 export interface AuditConfig {
   /** Path of the append-only JSONL audit log (Phase 0.6). */
   logPath: string;
+}
+
+/** Non-authoritative diagnostics; unrelated to audit storage/durability. */
+export interface LoggingConfig {
+  level: LogLevel;
 }
 
 /** Phase 3.5: review checkpoint for ingestion state persistence. */
@@ -73,6 +79,7 @@ export interface PlayOpsConfig {
   agent: AgentConfig;
   health: HealthConfig;
   audit: AuditConfig;
+  logging: LoggingConfig;
   review: ReviewConfig;
   release: ReleaseConfig;
   llm: LlmConfig;
@@ -84,6 +91,7 @@ export interface PartialPlayOpsConfig {
   agent?: Partial<AgentConfig>;
   health?: Partial<HealthConfig>;
   audit?: Partial<AuditConfig>;
+  logging?: Partial<LoggingConfig>;
   review?: Partial<ReviewConfig>;
   release?: Partial<ReleaseConfig>;
   llm?: { nineRouter?: Partial<NineRouterConfig> };
@@ -106,6 +114,9 @@ export const DEFAULT_CONFIG: PlayOpsConfig = {
   },
   audit: {
     logPath: "./logs/playops.audit.jsonl",
+  },
+  logging: {
+    level: DEFAULT_LOG_LEVEL,
   },
   review: {
     checkpointPath: "",
