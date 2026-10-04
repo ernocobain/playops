@@ -13,6 +13,13 @@ the repository maintainers.
 
 No unreleased changes yet.
 
+## [0.1.1] - 2026-10-05
+
+### Fixed
+
+- Include the fake service-account test fixture in fresh clones so the credential test suite is reproducible.
+- Keep real service-account credential files ignored while explicitly allowing only `tests/fixtures/service-account.valid.json`.
+
 ## [0.1.0] - 2026-10-04
 
 First prepared release line. PlayOps is distributed only as a **local npm

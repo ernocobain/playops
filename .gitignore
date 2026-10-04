@@ -30,3 +30,6 @@ Thumbs.db
 coverage/
 .cache/
 *.tsbuildinfo
+
+# Explicitly allow the fake credential test fixture
+!tests/fixtures/service-account.valid.json
