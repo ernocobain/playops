@@ -664,6 +664,11 @@ export function createReleaseRolloutTool(options: ReleaseRolloutToolOptions): Re
 
         let verificationEdit: ReturnType<typeof parseGooglePlayEditSession> | undefined;
         let journalRecordWritten = false;
+        // Phase 6.5: at most ONE delete attempt per temporary verification identity.
+        // The flag is set BEFORE each attempt, so no failure path can issue a second
+        // workflow-level delete for the same edit (generated-client retry is already
+        // disabled, but that alone does not bound the number of workflow calls).
+        let deleteAttempted = false;
         try {
           verificationEdit = validateOperationalEdit(
             await gateway.createEdit(),
@@ -683,6 +688,7 @@ export function createReleaseRolloutTool(options: ReleaseRolloutToolOptions): Re
           } catch (cause) {
             // No trustworthy journal record: stop the normal workflow, do not read
             // the track, and attempt exactly one delete for this exact edit id.
+            deleteAttempted = true;
             try {
               await gateway.deleteEdit(verificationEdit);
             } catch (deleteCause) {
@@ -712,7 +718,19 @@ export function createReleaseRolloutTool(options: ReleaseRolloutToolOptions): Re
             deployedTrack,
             exactExpectation(deployedTrack, intent, intent.newFraction),
           );
-          await gateway.deleteEdit(verificationEdit);
+          // EXACTLY ONE delete attempt for this exact temporary identity (Phase 6.5).
+          // The attempt is recorded before it is made, so the failure path below can
+          // never issue a second workflow-level delete for the same edit.
+          deleteAttempted = true;
+          try {
+            await gateway.deleteEdit(verificationEdit);
+          } catch (cleanupCause) {
+            throw new ReleaseError(
+              "ROLLOUT_VERIFICATION_CLEANUP_FAILED",
+              "Post-commit verification edit cleanup failed.",
+              { cause: cleanupCause, externalStateUncertain: true },
+            );
+          }
           // Clear the local handle first: a journal-removal failure must never
           // trigger a second delete attempt for an already-deleted edit.
           const deletedVerificationEditId = verificationEdit.editId;
@@ -727,7 +745,8 @@ export function createReleaseRolloutTool(options: ReleaseRolloutToolOptions): Re
             );
           }
         } catch (cause) {
-          if (verificationEdit !== undefined) {
+          if (verificationEdit !== undefined && !deleteAttempted) {
+            deleteAttempted = true;
             try {
               await gateway.deleteEdit(verificationEdit);
             } catch (cleanupCause) {

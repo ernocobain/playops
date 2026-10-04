@@ -12,6 +12,24 @@ PlayOps currently uses a Google **service-account JSON file**, not an interactiv
 
 Google's [Publisher setup guide](https://developers.google.com/android-publisher/getting_started) and [Reporting setup guide](https://developers.google.com/play/developer/reporting/overview) explain the upstream setup. PlayOps does not create service accounts, enable APIs, grant Play Console permissions, or rotate keys for you. It requests the Android Publisher OAuth scope for reviews/releases and the Play Developer Reporting scope for health; doctor requests both. An OAuth scope is **not** proof of app-level authorization.
 
+### Exact scopes requested today
+
+PlayOps requests exactly two OAuth scopes and never adds one implicitly (`src/googleplay/auth/index.ts`; the scope list is de-duplicated and sorted):
+
+| Capability area          | Scope value                                              | Used by                               |
+| ------------------------ | -------------------------------------------------------- | ------------------------------------- |
+| Android Publisher v3     | `https://www.googleapis.com/auth/androidpublisher`       | `doctor`, Review Agent, Release Agent |
+| Play Developer Reporting | `https://www.googleapis.com/auth/playdeveloperreporting` | `doctor`, App Health                  |
+
+These are the scopes Google's own reference pages require for the methods PlayOps calls (for example `reviews.reply` and `vitals.crashrate.query`). The APIs do not publish narrower per-operation alternatives, so the correct least-privilege lever is **app-level authorization**, not a smaller scope:
+
+- Grant the service account access **only to the app(s) you operate**, using Play Console **Users and permissions → App permissions** (account-level permissions apply to every app in the developer account).
+- Grant only the capabilities you actually use. A read/connectivity setup (`doctor`, health reports, review triage) needs no release/publish rights; add them only when you really perform those mutations.
+- Play Console's own permission list is the authoritative naming source for your account. This guide deliberately does not assert a specific permission or role label, and Google's naming can change.
+- Restrict the Google Cloud side too: keep the service account dedicated to PlayOps, disable APIs you no longer use, and follow your key-management/rotation policy.
+
+Neither the OAuth scope nor an app-level permission proves that PlayOps' own approval/verification gates were satisfied, and neither proves that a specific mutation is currently enabled for the app.
+
 ## Effective configuration and paths
 
 The CLI loads **`config/playops.yaml` relative to its current working directory**, not the install directory. Precedence is **built-in defaults < YAML file < environment**. A missing default file is allowed and leaves defaults in place; commands that need a package/credential still fail closed when those values are absent. A malformed file fails even if environment variables could otherwise supply its settings.
@@ -73,6 +91,13 @@ YAML keys and environment names below are the current loader's actual controls. 
 | `agent.approval_timeout_seconds`    | `PLAYOPS_AGENT_APPROVAL_TIMEOUT_SECONDS`    | `300`; parsed setting, **not wired to a timeout in the current interactive prompt**. Not the approval-token TTL.                          |
 
 Review commands require checkpoint, audit, Google and 9Router configuration; triage classifies and reply drafts using that provider. Doctor and health do not require an LLM provider. Release operation intent (artifact, track, release, notes, rollout) is trusted **operation-scoped composition input**, not additional YAML or model-selectable config. The installed release CLI does not compose those live operations; see the [release walkthrough](release-pipeline.md).
+
+### Provider and runtime hardening notes
+
+- **The 9Router base URL is part of your trust boundary.** Review text and the optional bearer key are sent to exactly that URL. PlayOps validates the URL shape (`http:`/`https:`, hostname required, no embedded credentials, query, fragment or whitespace) but accepts any host. Prefer `https://` for anything that is not strict loopback, and treat a plain `http://` remote endpoint as sending review content and the key in cleartext.
+- **Do not export `GOOGLE_SDK_NODE_LOGGING` for a PlayOps process.** The officially installed `google-auth-library`/`google-logging-utils` can log full Google request/response bodies — including OAuth token-endpoint responses — to stderr when that variable is set. PlayOps never sets it and its own redaction never sees those lines, so leave it unset in shells, CI jobs and service units that run PlayOps.
+- **PlayOps-created state is owner-only by default** (see the [audit format](audit-log.md) section on durability): files `0600`, PlayOps-created parent directories `0700`. Existing operator files/directories keep the mode you set, and no existing file is re-permissioned, encrypted or signed.
+- **Pin or verify the artifact you install.** The local tarball declares `^` dependency ranges and does not ship `package-lock.json`, so a networked consumer install resolves those ranges at install time. Install from a trusted local path and verify the artifact digest you received; do not assume the installed dependency set equals the audited one.
 
 ## Health thresholds: exact reported scale, disabled by default
 

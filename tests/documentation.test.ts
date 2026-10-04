@@ -142,14 +142,16 @@ describe("Phase 6.4 operator documentation", () => {
     expect(guide).not.toContain("verifies the intended release while preserving non-target state");
   });
 
-  it("documents the rollout workflow's second temporary cleanup call without prescribing retry", () => {
+  it("documents the bounded single-delete policy for every temporary-edit workflow", () => {
     const guide = read("docs/release-pipeline.md");
-    expect(guide).toContain("Current rollout advancement is an exception");
-    expect(guide).toContain("two workflow calls");
+    expect(guide).toContain("bounded to one delete attempt per temporary identity");
     expect(guide).toContain("ROLLOUT_VERIFICATION_CLEANUP_FAILED");
-    expect(guide).toContain("not fixed by this documentation-only milestone");
-    expect(guide).toContain("not permission for an operator to retry automatically");
-    expect(guide).not.toContain("Temporary verification flows also attempt one cleanup");
+    expect(guide).toContain("keeps any written journal record");
+    expect(guide).toContain("performs no automatic retry");
+    // The pre-6.5 exception disclosure must be gone now that the rollout guard exists.
+    expect(guide).not.toContain("Current rollout advancement is an exception");
+    expect(guide).not.toContain("two workflow calls");
+    expect(guide).not.toContain("not fixed by this documentation-only milestone");
   });
 
   it("example config comment clarifications do not change semantics", () => {

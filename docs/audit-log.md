@@ -52,7 +52,7 @@ Ordinary audit appends use append mode and close the file; **not every audit wri
 
 Approval/verification/runtime required audit failures remain fail-closed, independently of diagnostic logging. "Required" does not mean every such write uses durable mode. Writes across multiple events/alerts are ordered but **not transactional**: a partial failure may leave earlier events present, and there is no automatic rollback, multi-process lock or exactly-once guarantee. File/directory fsync does not establish synchronization of all newly created ancestors or verified power-loss behavior.
 
-Keep audit/state directories outside the installed package and protect them with your filesystem access policy. The audit writer does not itself enforce owner-only file permissions or encrypt/sign records. Redaction is not access control.
+Keep audit/state directories outside the installed package and protect them with your filesystem access policy. PlayOps creates **new** audit, checkpoint, edit-session and cleanup-journal files owner-only (`0600`, further restricted by a stricter umask) and PlayOps-created parent directories `0700`; the health report is published `0600` into an **operator-supplied existing directory** (its mode is the operator's choice). An **existing** file or directory keeps whatever mode its operator set, and PlayOps never re-permissions, encrypts or signs an existing ledger. Redaction is not access control.
 
 ## Redaction: guarantees and limits
 

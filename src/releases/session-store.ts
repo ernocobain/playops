@@ -111,8 +111,9 @@ export function createFileReleaseEditSessionStore(
       const validated = validate(session);
       const tempPath = `${path}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
       try {
-        await mkdir(dirname(path), { recursive: true });
-        const handle = await open(tempPath, "wx");
+        // Phase 6.5: owner-only temp file and owner-only PlayOps-created parent.
+        await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+        const handle = await open(tempPath, "wx", 0o600);
         try {
           await handle.writeFile(`${JSON.stringify(validated, null, 2)}\n`, "utf8");
           await handle.sync();

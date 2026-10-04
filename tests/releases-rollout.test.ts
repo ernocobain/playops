@@ -530,13 +530,15 @@ describe("Phase 4.12 rollout tool", () => {
     expect(built.calls.delete).toBe(1);
   });
 
-  it("marks verification cleanup failure uncertain without retry", async () => {
+  it("marks verification cleanup failure uncertain after exactly one delete attempt", async () => {
     const built = buildTool({ deleteError: new Error("delete failed") });
     await expect(built.tool.execute({}, {})).rejects.toMatchObject({
       code: "ROLLOUT_VERIFICATION_CLEANUP_FAILED",
       externalStateUncertain: true,
     });
-    expect(built.calls.delete).toBe(2);
+    expect(built.calls.delete).toBe(1);
+    // The written journal record is retained so the exact edit id stays discoverable.
+    expect(built.journal.entries.size).toBe(1);
   });
 });
 
@@ -565,6 +567,20 @@ describe("Phase 4.15 temporary-edit journal ordering", () => {
       1,
     );
     expect(journal.entries.size).toBe(0);
+  });
+
+  it("attempts exactly one delete when the journal write and that delete both fail", async () => {
+    const journal = makeCleanupJournal({ recordError: new Error("PRIVATE-JOURNAL") });
+    const built = buildTool({ deleteError: new Error("delete failed") }, makeIntent(), journal);
+    await expect(built.tool.execute({}, {})).rejects.toMatchObject({
+      code: "ROLLOUT_JOURNAL_WRITE_FAILED",
+      externalStateUncertain: true,
+    });
+    const verificationId = "verification-edit";
+    expect(built.events.filter((event) => event === `edits.delete:${verificationId}`)).toHaveLength(
+      1,
+    );
+    expect(built.events).not.toContain(`edits.tracks.get:${verificationId}`);
   });
 
   it("fails safely when the journal record cannot be removed after a confirmed delete", async () => {

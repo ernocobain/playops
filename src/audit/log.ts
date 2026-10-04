@@ -41,9 +41,15 @@ export function appendAuditEntry(
 
   const line = `${JSON.stringify(written)}\n`;
   try {
-    mkdirSync(dirname(logPath), { recursive: true });
+    // Phase 6.5: PlayOps-created ancestors are owner-only too, so a group-writable
+    // directory cannot be used to replace/delete the ledger; an existing directory
+    // keeps the operator's mode.
+    mkdirSync(dirname(logPath), { recursive: true, mode: 0o700 });
     // O_APPEND guarantees append semantics; the file is created if absent.
-    const fd = openSync(logPath, "a");
+    // Phase 6.5: a newly created audit file is owner-only (0600, subject to umask);
+    // an existing file keeps its operator-set mode. Audit records are operation
+    // evidence and are not meant to be group/world readable.
+    const fd = openSync(logPath, "a", 0o600);
     try {
       appendFileSync(fd, line, "utf8");
       if (options.durable) fsyncSync(fd);
