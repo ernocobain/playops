@@ -5,18 +5,19 @@ import {
   assertPackageMetadata,
   OPERATOR_DOC_FILES,
   REQUIRED_FILES,
+  ROOT_PAYLOAD_FILES,
   RUNTIME_DEPENDENCIES,
 } from "./package-content.mjs";
 
 const metadata = () => ({
   name: "playops",
-  version: "0.0.0",
+  version: "1.2.3",
   license: "MIT",
   private: true,
   type: "module",
   engines: { node: ">=24 <25" },
   bin: { playops: "dist/cli/index.js" },
-  files: ["dist/**/*.js", "config/playops.example.yaml", ...OPERATOR_DOC_FILES],
+  files: ["dist/**/*.js", "config/playops.example.yaml", "CHANGELOG.md", ...OPERATOR_DOC_FILES],
   dependencies: { ...RUNTIME_DEPENDENCIES },
   scripts: { prepack: "npm run build" },
 });
@@ -78,7 +79,9 @@ for (const update of [
   { types: "dist/index.d.ts" },
   { private: false },
   { name: "other" },
-  { version: "1.0.0" },
+  { version: "1.2" },
+  { version: "v1.2.3" },
+  { version: 1.2 },
   { license: "other" },
   { type: "commonjs" },
   { engines: { node: ">=26" } },
@@ -91,3 +94,13 @@ for (const update of [
   test(`rejects drifted or install-compiling metadata ${JSON.stringify(update)}`, () =>
     assert.throws(() => assertPackageMetadata({ ...metadata(), ...update })));
 }
+test("requires the release changelog in the payload", () => {
+  const withoutChangelog = REQUIRED_FILES.filter((path) => path !== "CHANGELOG.md");
+  assert.throws(() => assertPackageContents(withoutChangelog, metadata()), /CHANGELOG\.md/u);
+});
+test("every root release-consumer file is a required payload file", () => {
+  for (const path of ROOT_PAYLOAD_FILES) {
+    assert.ok(REQUIRED_FILES.includes(path), `${path} must be required`);
+  }
+  assert.ok(ROOT_PAYLOAD_FILES.includes("CHANGELOG.md"));
+});

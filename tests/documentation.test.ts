@@ -43,10 +43,12 @@ describe("Phase 6.4 operator documentation", () => {
   it("validates promised installed documents, relative links/anchors and safe examples", () => {
     expect(inspection.report.documents).toEqual([
       "README.md",
+      "CHANGELOG.md",
       "docs/credentials.md",
       "docs/permissions-and-approvals.md",
       "docs/audit-log.md",
       "docs/release-pipeline.md",
+      "docs/release-process.md",
     ]);
     expect(inspection.report.relativeLinks).toBeGreaterThan(0);
     expect(commands).toContain("playops --help");

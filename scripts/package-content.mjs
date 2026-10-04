@@ -4,9 +4,10 @@
  * Shared by the repo's metadata test and the real-tarball acceptance harness, so
  * both judge the same rules. PlayOps ships an installed CLI, not a library API:
  * the payload is the compiled runtime JavaScript, operator-safe example
- * configuration, and the four Phase 6.4 operator guides — never operator config,
- * credentials, state, reports, tests, source, internal plans/decision/probe docs,
- * or development output (declarations/source maps).
+ * configuration, the release-consumer documents (`README.md`, `CHANGELOG.md`,
+ * `LICENSE`) and the operator guides — never operator config, credentials, state,
+ * reports, tests, source, internal plans/decision/probe docs, or development
+ * output (declarations/source maps).
  */
 
 /** Exactly the approved production dependency set (no additions, no duplicates). */
@@ -23,18 +24,40 @@ export const OPERATOR_DOC_FILES = Object.freeze([
   "docs/permissions-and-approvals.md",
   "docs/audit-log.md",
   "docs/release-pipeline.md",
+  "docs/release-process.md",
 ]);
+
+/** Root-level release-consumer files. `CHANGELOG.md` ships deliberately. */
+export const ROOT_PAYLOAD_FILES = Object.freeze([
+  "package.json",
+  "README.md",
+  "CHANGELOG.md",
+  "LICENSE",
+  "config/playops.example.yaml",
+]);
+
+/**
+ * Exact `MAJOR.MINOR.PATCH` distribution version. The *prepared* version identity
+ * (package.json == package-lock.json == newest CHANGELOG release) is enforced by
+ * `scripts/release-version.mjs`, so the version is asserted here by shape plus
+ * `private: true` instead of being duplicated as a literal in a second place.
+ */
+export const PACKAGE_VERSION_PATTERN = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u;
 
 /** Approved distribution metadata. `main`/`exports`/`types` stay absent. */
 export const APPROVED_PACKAGE_FIELDS = Object.freeze({
   name: "playops",
-  version: "0.0.0",
   license: "MIT",
   private: true,
   type: "module",
   engines: Object.freeze({ node: ">=24 <25" }),
   bin: Object.freeze({ playops: "dist/cli/index.js" }),
-  files: Object.freeze(["dist/**/*.js", "config/playops.example.yaml", ...OPERATOR_DOC_FILES]),
+  files: Object.freeze([
+    "dist/**/*.js",
+    "config/playops.example.yaml",
+    "CHANGELOG.md",
+    ...OPERATOR_DOC_FILES,
+  ]),
 });
 
 /** Lifecycle hooks that would compile or fetch on the consumer machine. */
@@ -51,13 +74,7 @@ export const FORBIDDEN_SCRIPTS = Object.freeze([
 ]);
 
 /** Files the payload must always contain. */
-export const REQUIRED_PAYLOAD_FILES = Object.freeze([
-  "package.json",
-  "README.md",
-  "LICENSE",
-  "config/playops.example.yaml",
-  ...OPERATOR_DOC_FILES,
-]);
+export const REQUIRED_PAYLOAD_FILES = Object.freeze([...ROOT_PAYLOAD_FILES, ...OPERATOR_DOC_FILES]);
 
 /** Compiled entry points an installation needs; also the minimum module allowlist. */
 export const REQUIRED_MODULE_FILES = Object.freeze([
@@ -161,6 +178,11 @@ export function assertPackageMetadata(metadata) {
         `package.${key} must stay absent: the installed CLI is the only supported entry`,
       );
     }
+  }
+  if (typeof metadata.version !== "string" || !PACKAGE_VERSION_PATTERN.test(metadata.version)) {
+    throw new Error(
+      `package.version must be an exact MAJOR.MINOR.PATCH release version, got ${JSON.stringify(metadata.version)}`,
+    );
   }
   if (JSON.stringify(metadata.dependencies) !== JSON.stringify(RUNTIME_DEPENDENCIES)) {
     throw new Error(

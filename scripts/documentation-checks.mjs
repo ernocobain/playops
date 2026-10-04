@@ -1,10 +1,10 @@
-/** Lightweight checks for the five public Phase 6.4 documents, not a docs framework. */
+/** Lightweight checks for the public release documents, not a docs framework. */
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { OPERATOR_DOC_FILES, REQUIRED_PAYLOAD_FILES } from "./package-content.mjs";
 
-export const PUBLIC_DOCUMENTS = Object.freeze(["README.md", ...OPERATOR_DOC_FILES]);
+export const PUBLIC_DOCUMENTS = Object.freeze(["README.md", "CHANGELOG.md", ...OPERATOR_DOC_FILES]);
 
 export function codeBlocks(text) {
   return [...text.matchAll(/^```([a-z0-9_-]*)\r?\n([\s\S]*?)^```\s*$/gmu)].map((match) => ({

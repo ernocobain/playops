@@ -2,7 +2,7 @@
 
 PlayOps is an independent, **CLI-first** agent/harness for Google Play operations: review triage and human-approved public replies, a Release Agent runtime for existing `.aab` artifacts, and app-health reporting. It does **not** build Android apps and does **not** require Hermes at runtime.
 
-**Supported runtime: Node.js 24 LTS (`>=24 <25`).** Current distribution is a local npm tarball, `playops-0.0.0.tgz`, installed as an npm CLI. It is **not published to the public npm registry**, a standalone binary, or a container. The supported entry point is `playops`, not a public JavaScript library API.
+**Supported runtime: Node.js 24 LTS (`>=24 <25`).** Current distribution is a local npm tarball, `playops-0.1.0.tgz`, installed as an npm CLI. It is **not published to the public npm registry**, a standalone binary, or a container. The supported entry point is `playops`, not a public JavaScript library API. PlayOps uses Semantic Versioning and stays **pre-1.0**: the prepared release is `0.1.0`, whose Git tag would be `v0.1.0`. See the [release process](docs/release-process.md) and the [changelog](CHANGELOG.md).
 
 ## Quickstart: install a local tarball
 
@@ -13,14 +13,14 @@ node --version
 mkdir -p playops-operator
 cd playops-operator
 npm init -y
-npm install --omit=dev /path/to/playops-0.0.0.tgz
+npm install --omit=dev /path/to/playops-0.1.0.tgz
 export PATH="$PWD/node_modules/.bin:$PATH"
 playops --help
 ```
 
 `playops --help` is the **safe first command**: no credentials/config required and no Google, LLM, or browser call. The local bin path above applies in this shell; run from your operator directory. Installing the tarball can retrieve its runtime dependencies from npm; this is **not an offline-install guarantee**. No PlayOps compilation, repository source, TypeScript, devDependencies, or Hermes is needed on the consumer machine.
 
-The package ships `README.md`, `LICENSE`, `config/playops.example.yaml` and the four operator guides linked below, alongside compiled runtime JavaScript. After local installation the guides are available under `node_modules/playops/docs/`.
+The package ships `README.md`, `CHANGELOG.md`, `LICENSE`, `config/playops.example.yaml` and the five operator guides linked below, alongside compiled runtime JavaScript. After local installation the guides are available under `node_modules/playops/docs/`.
 
 ### Configure deliberately; keep credentials external
 
@@ -43,12 +43,15 @@ Doctor checks config → credential shape → OAuth → `reviews.list` → `vita
 
 ## Operator guides
 
-All four guides **ship in the npm tarball**; their relative links work in the installed package:
+All five guides **ship in the npm tarball**; their relative links work in the installed package:
 
 - [Credentials and configuration](docs/credentials.md) — Google setup, external files, cwd/env semantics, health threshold migration, live-authorization limits.
 - [Permissions and approvals](docs/permissions-and-approvals.md) — exact `read` / `write` / `destructive` / `publish` policy, operation binding, interactive/token architecture and limitations.
 - [Audit log, diagnostic logging and safe errors](docs/audit-log.md) — actual JSONL schema, synthetic examples, required writes versus best-effort stderr, redaction limits.
 - [Release pipeline walkthrough](docs/release-pipeline.md) — implemented runtime sequence, prebuilt AAB, exact approvals, independent verification, rollout and edit hygiene; **current CLI limitations**.
+- [Release process](docs/release-process.md) — Semantic Versioning policy, prepared version identity, maintainer release checklist, annotated-tag contract and safety, artifact hashing, and what is explicitly out of scope.
+
+The [changelog](CHANGELOG.md) ships too: it records operator-visible changes and the known limitations of the prepared release line. This repository has **no release automation** — no publish workflow, version bot, or tag automation — and `private: true` stays in place.
 
 ## Current command quick reference
 
@@ -101,7 +104,7 @@ The implemented syntax is `playops releases --dry-run <mutating-release-tool>`, 
 - Append-only **audit JSONL is operation evidence**; structured logging is separate, best-effort diagnostics on **stderr**. Minimum level is `info` by default; YAML `logging.level` / `PLAYOPS_LOGGING_LEVEL` accepts `debug`, `info`, `warn`, `error`.
 - Safe unexpected-error output uses stable category/code, deterministic message and optional guidance, never raw stack/cause; existing command-specific safe messages remain. `externalStateUncertain=true` means **inspect before acting; no automatic retry**. Debug does not permit secret output.
 - Redaction protects known key families; **arbitrary free-form strings are not universally scanned**. Never pass credentials, headers, SDK bodies or environment/config dumps to log messages.
-- Runtime/tool safety and local-tarball installation have fake/mock/network-isolated acceptance on Node 24. Prior specific live reads and the narrow cleanup observation are separately scoped; Google mutation authorization remains unverified. Full Phase 6 acceptance, security review and versioning/release-process work are **not complete**.
+- Runtime/tool safety and local-tarball installation have fake/mock/network-isolated acceptance on Node 24. Prior specific live reads and the narrow cleanup observation are separately scoped; **Google mutation authorization remains unverified**. The Phase 6 packaging, structured-logging, error-taxonomy, operator-documentation, security-review and versioning/release-process milestones are complete for the prepared `0.1.0` local tarball; that is **not** a public-registry release, a production certification, or 1.0 API stability.
 - Known limitations include single-process token/state-file coordination, no cross-process locking, no enforced interactive prompt timer, and the unrecoverable insert-response edit-identity window. See the guides for the exact boundaries.
 
 ## Producer/contributor workflow (source checkout only)
@@ -114,7 +117,7 @@ mkdir -p artifacts
 NODE_ENV=development npm pack --pack-destination ./artifacts
 ```
 
-This creates `artifacts/playops-0.0.0.tgz`; there is no install-time TypeScript build on the consumer. Do **not** substitute a public-registry install or `npm publish` for this local flow.
+This creates `artifacts/playops-0.1.0.tgz`; there is no install-time TypeScript build on the consumer. Do **not** substitute a public-registry install or `npm publish` for this local flow. The full maintainer checklist — version identity, changelog, annotated tag, artifact hash, and rehearsal in an isolated copy — is in [the release process](docs/release-process.md).
 
 For source-change verification:
 
@@ -128,3 +131,5 @@ npm run test:package
 ```
 
 Package acceptance performs a real isolated producer/production-only consumer install, installed-bin and fake state/audit/approval checks. Dependency retrieval is separate from network-blocked application checks: no live Google/9Router or real credentials are needed. The repository-only `PLAYOPS_PLAN.md` tracks milestone/evidence history; it and internal architecture/decision/probe documents **do not ship** in the consumer tarball.
+
+One repository-only detail: `tests/fixtures/service-account.valid.json` is a **fake** fixture that `.gitignore` excludes by name (credential-shaped filename), so a freshly cloned working copy must recreate it locally before `npm run test:run` can pass. The consumer install path and the published tarball are unaffected.

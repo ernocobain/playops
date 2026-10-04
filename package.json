@@ -1,6 +1,6 @@
 {
   "name": "playops",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Independent AI agent/harness for Google Play and Android application operations.",
   "license": "MIT",
   "type": "module",
@@ -14,10 +14,12 @@
   "files": [
     "dist/**/*.js",
     "config/playops.example.yaml",
+    "CHANGELOG.md",
     "docs/credentials.md",
     "docs/permissions-and-approvals.md",
     "docs/audit-log.md",
-    "docs/release-pipeline.md"
+    "docs/release-pipeline.md",
+    "docs/release-process.md"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",

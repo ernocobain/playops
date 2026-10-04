@@ -14,11 +14,13 @@ import {
 import { REQUIRED_PAYLOAD_FILES } from "./package-content.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
-test("validates all five public documents and their installed-payload links", () => {
+test("validates every public release document and their installed-payload links", () => {
   const result = assertOperatorDocumentation(root);
-  assert.equal(result.documents.length, 5);
+  assert.equal(result.documents.length, 7);
   assert.ok(result.relativeLinks > 0);
   assert.ok(result.cliExamples.includes("playops --help"));
+  assert.ok(result.documents.includes("CHANGELOG.md"));
+  assert.ok(result.documents.includes("docs/release-process.md"));
 });
 test("extracts multiline shell examples and ignores links inside fences", () => {
   const text =

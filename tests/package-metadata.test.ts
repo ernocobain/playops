@@ -34,10 +34,12 @@ describe("Phase 6.1 CLI-only distribution contract", () => {
     expect(metadata.files).toEqual([
       "dist/**/*.js",
       "config/playops.example.yaml",
+      "CHANGELOG.md",
       "docs/credentials.md",
       "docs/permissions-and-approvals.md",
       "docs/audit-log.md",
       "docs/release-pipeline.md",
+      "docs/release-process.md",
     ]);
     for (const hook of ["prepare", "preinstall", "install", "postinstall", "publish"])
       expect(metadata.scripts[hook]).toBeUndefined();
@@ -45,18 +47,32 @@ describe("Phase 6.1 CLI-only distribution contract", () => {
   it("keeps the approved runtime, private local distribution, version and four dependencies", () => {
     expect(metadata).toMatchObject({
       name: "playops",
-      version: "0.0.0",
       license: "MIT",
       private: true,
       type: "module",
       engines: { node: ">=24 <25" },
     });
+    expect(metadata.version).toMatch(/^\d+\.\d+\.\d+$/u);
     expect(metadata.dependencies).toEqual({
       "@googleapis/androidpublisher": "^42.1.0",
       "@googleapis/playdeveloperreporting": "^15.0.1",
       "google-auth-library": "^11.1.0",
       yaml: "^2.9.1",
     });
+  });
+  it("prepares one version agreed by the manifest, the lockfile and the changelog", () => {
+    const lock = JSON.parse(readFileSync(new URL("package-lock.json", root), "utf8")) as {
+      version: string;
+      packages: Record<string, { version?: string }>;
+    };
+    expect(lock.version).toBe(metadata.version);
+    expect(lock.packages[""]?.version).toBe(metadata.version);
+    const changelog = readFileSync(new URL("CHANGELOG.md", root), "utf8");
+    expect(changelog).toContain("## [Unreleased]");
+    const releases = [...changelog.matchAll(/^## \[(\d+\.\d+\.\d+)\] - (\S+)$/gmu)];
+    expect(releases.length).toBeGreaterThan(0);
+    expect(releases[0]?.[1]).toBe(metadata.version);
+    expect(releases[0]?.[2]).toMatch(/^\d{4}-\d{2}-\d{2}$/u);
   });
   it("safe example uses disabled reported-scale strings/null without legacy names or a real credential path", () => {
     const text = readFileSync(new URL("config/playops.example.yaml", root), "utf8");

@@ -32,9 +32,11 @@ import {
   assertPackageContents,
   APPROVED_PACKAGE_FIELDS,
   OPERATOR_DOC_FILES,
+  ROOT_PAYLOAD_FILES,
   RUNTIME_DEPENDENCIES,
 } from "./package-content.mjs";
 import { assertOperatorDocumentation } from "./documentation-checks.mjs";
+import { collectReleaseReport } from "./release-version.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const marker = "FAKE-PHASE61-PRIVATE-MARKER";
@@ -174,7 +176,12 @@ try {
   // operator files. The tarball payload is still governed solely by npm files.
   const added = run("git", ["ls-files", "--others", "--exclude-standard", "-z"], { cwd: repoRoot })
     .stdout.split("\u0000")
-    .filter((path) => /^(src|tests|scripts)\//u.test(path) || OPERATOR_DOC_FILES.includes(path));
+    .filter(
+      (path) =>
+        /^(src|tests|scripts)\//u.test(path) ||
+        OPERATOR_DOC_FILES.includes(path) ||
+        ROOT_PAYLOAD_FILES.includes(path),
+    );
   for (const path of new Set([...tracked, ...added])) {
     const target = join(source, path);
     mkdirSync(dirname(target), { recursive: true });
@@ -260,7 +267,18 @@ try {
     ),
   );
   check(
-    "payload ships exactly the four promised operator guides",
+    "payload ships the release changelog with the prepared version entry",
+    packlist.includes("CHANGELOG.md") &&
+      readFileSync(join(source, "CHANGELOG.md"), "utf8").includes(`## [${sourcePkg.version}]`),
+  );
+  const releaseReport = collectReleaseReport(source);
+  check(
+    "isolated copy carries one consistent prepared version (package.json == lockfile == changelog)",
+    releaseReport.ok && releaseReport.version === sourcePkg.version,
+    releaseReport.problems.join("; "),
+  );
+  check(
+    "payload ships exactly the promised operator guides",
     JSON.stringify(packlist.filter((path) => path.startsWith("docs/")).sort()) ===
       JSON.stringify([...OPERATOR_DOC_FILES].sort()),
   );
@@ -312,8 +330,8 @@ try {
   const installedFiles = listFiles(installed);
   const documentation = assertOperatorDocumentation(installed);
   check(
-    "installed README/operator-doc relative links and safe examples validate without repository files",
-    documentation.documents.length === 5 && documentation.relativeLinks > 0,
+    "installed README/changelog/operator-doc relative links and safe examples validate without repository files",
+    documentation.documents.length === 7 && documentation.relativeLinks > 0,
   );
   const installedMetadata = JSON.parse(readFileSync(join(installed, "package.json"), "utf8"));
   const installedCheck = (() => {
