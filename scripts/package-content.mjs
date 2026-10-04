@@ -3,9 +3,10 @@
  *
  * Shared by the repo's metadata test and the real-tarball acceptance harness, so
  * both judge the same rules. PlayOps ships an installed CLI, not a library API:
- * the payload is the compiled runtime JavaScript plus the operator-safe example
- * configuration — never operator config, credentials, state, reports, tests,
- * source, or development output (declarations/source maps).
+ * the payload is the compiled runtime JavaScript, operator-safe example
+ * configuration, and the four Phase 6.4 operator guides — never operator config,
+ * credentials, state, reports, tests, source, internal plans/decision/probe docs,
+ * or development output (declarations/source maps).
  */
 
 /** Exactly the approved production dependency set (no additions, no duplicates). */
@@ -16,6 +17,14 @@ export const RUNTIME_DEPENDENCIES = Object.freeze({
   yaml: "^2.9.1",
 });
 
+/** Only these public operator guides ship; never the entire docs/ tree. */
+export const OPERATOR_DOC_FILES = Object.freeze([
+  "docs/credentials.md",
+  "docs/permissions-and-approvals.md",
+  "docs/audit-log.md",
+  "docs/release-pipeline.md",
+]);
+
 /** Approved distribution metadata. `main`/`exports`/`types` stay absent. */
 export const APPROVED_PACKAGE_FIELDS = Object.freeze({
   name: "playops",
@@ -25,7 +34,7 @@ export const APPROVED_PACKAGE_FIELDS = Object.freeze({
   type: "module",
   engines: Object.freeze({ node: ">=24 <25" }),
   bin: Object.freeze({ playops: "dist/cli/index.js" }),
-  files: Object.freeze(["dist/**/*.js", "config/playops.example.yaml"]),
+  files: Object.freeze(["dist/**/*.js", "config/playops.example.yaml", ...OPERATOR_DOC_FILES]),
 });
 
 /** Lifecycle hooks that would compile or fetch on the consumer machine. */
@@ -47,6 +56,7 @@ export const REQUIRED_PAYLOAD_FILES = Object.freeze([
   "README.md",
   "LICENSE",
   "config/playops.example.yaml",
+  ...OPERATOR_DOC_FILES,
 ]);
 
 /** Compiled entry points an installation needs; also the minimum module allowlist. */
@@ -111,9 +121,12 @@ export function findPathViolations(path) {
   }
   const [root] = segments;
   if (root !== undefined && FORBIDDEN_ROOT_SEGMENTS.has(root)) {
-    violations.push(`lives under the excluded ${root}/ tree`);
+    if (root !== "docs" || !OPERATOR_DOC_FILES.includes(path)) {
+      violations.push(`lives under the excluded ${root}/ tree`);
+    }
   }
   const basename = segments[segments.length - 1] ?? "";
+  if (basename === "PLAYOPS_PLAN.md") violations.push("is the internal roadmap");
   if (basename === ".env" || basename.startsWith(".env."))
     violations.push("is an environment file");
   if (basename === ".npmrc") violations.push("is an npm registry/auth config");

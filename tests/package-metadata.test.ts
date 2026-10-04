@@ -28,10 +28,17 @@ describe("Phase 6.1 CLI-only distribution contract", () => {
     expect(metadata.types).toBeUndefined();
     expect(metadata.bin).toEqual({ playops: "dist/cli/index.js" });
   });
-  it("builds only before packing and ships runtime JS plus the safe example", () => {
+  it("builds only before packing and ships runtime JS, the safe example and only operator guides", () => {
     expect(metadata.scripts.prepack).toBe("npm run build");
     expect(metadata.scripts["test:package"]).toBe("node scripts/package-acceptance.mjs");
-    expect(metadata.files).toEqual(["dist/**/*.js", "config/playops.example.yaml"]);
+    expect(metadata.files).toEqual([
+      "dist/**/*.js",
+      "config/playops.example.yaml",
+      "docs/credentials.md",
+      "docs/permissions-and-approvals.md",
+      "docs/audit-log.md",
+      "docs/release-pipeline.md",
+    ]);
     for (const hook of ["prepare", "preinstall", "install", "postinstall", "publish"])
       expect(metadata.scripts[hook]).toBeUndefined();
   });

@@ -31,8 +31,10 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   assertPackageContents,
   APPROVED_PACKAGE_FIELDS,
+  OPERATOR_DOC_FILES,
   RUNTIME_DEPENDENCIES,
 } from "./package-content.mjs";
+import { assertOperatorDocumentation } from "./documentation-checks.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const marker = "FAKE-PHASE61-PRIVATE-MARKER";
@@ -172,7 +174,7 @@ try {
   // operator files. The tarball payload is still governed solely by npm files.
   const added = run("git", ["ls-files", "--others", "--exclude-standard", "-z"], { cwd: repoRoot })
     .stdout.split("\u0000")
-    .filter((path) => /^(src|tests|scripts)\//u.test(path));
+    .filter((path) => /^(src|tests|scripts)\//u.test(path) || OPERATOR_DOC_FILES.includes(path));
   for (const path of new Set([...tracked, ...added])) {
     const target = join(source, path);
     mkdirSync(dirname(target), { recursive: true });
@@ -249,8 +251,18 @@ try {
     Object.keys(seeded).every((path) => !packlist.includes(path)),
   );
   check(
-    "payload excludes repository source, tests, docs and dev scripts",
-    !packlist.some((path) => /^(src|tests|scripts|docs)\//.test(path)),
+    "payload excludes repository source, tests, dev scripts and internal docs",
+    !packlist.some(
+      (path) =>
+        /^(src|tests|scripts)\//u.test(path) ||
+        (path.startsWith("docs/") && !OPERATOR_DOC_FILES.includes(path)) ||
+        path === "PLAYOPS_PLAN.md",
+    ),
+  );
+  check(
+    "payload ships exactly the four promised operator guides",
+    JSON.stringify(packlist.filter((path) => path.startsWith("docs/")).sort()) ===
+      JSON.stringify([...OPERATOR_DOC_FILES].sort()),
   );
 
   const packed = parsePackJson(
@@ -283,9 +295,10 @@ try {
   }
 
   // ----------------------------------------------------------- consumer install
-  writeFileSync(
-    join(consumer, "package.json"),
-    JSON.stringify({ name: "phase61-consumer", version: "0.0.0", private: true }, null, 2),
+  npm(["init", "-y"], consumer);
+  check(
+    "README npm init -y creates the clean consumer manifest",
+    existsSync(join(consumer, "package.json")),
   );
   npm(["install", "--omit=dev", "--no-audit", "--no-fund", tarball], consumer, {
     NODE_ENV: "production",
@@ -297,6 +310,11 @@ try {
   );
 
   const installedFiles = listFiles(installed);
+  const documentation = assertOperatorDocumentation(installed);
+  check(
+    "installed README/operator-doc relative links and safe examples validate without repository files",
+    documentation.documents.length === 5 && documentation.relativeLinks > 0,
+  );
   const installedMetadata = JSON.parse(readFileSync(join(installed, "package.json"), "utf8"));
   const installedCheck = (() => {
     try {

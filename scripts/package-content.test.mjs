@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   assertPackageContents,
   assertPackageMetadata,
+  OPERATOR_DOC_FILES,
   REQUIRED_FILES,
   RUNTIME_DEPENDENCIES,
 } from "./package-content.mjs";
@@ -15,7 +16,7 @@ const metadata = () => ({
   type: "module",
   engines: { node: ">=24 <25" },
   bin: { playops: "dist/cli/index.js" },
-  files: ["dist/**/*.js", "config/playops.example.yaml"],
+  files: ["dist/**/*.js", "config/playops.example.yaml", ...OPERATOR_DOC_FILES],
   dependencies: { ...RUNTIME_DEPENDENCIES },
   scripts: { prepack: "npm run build" },
 });
@@ -35,6 +36,14 @@ for (const path of [
   "data/releases/edit-session.json",
   "data/releases/edit-cleanup-journal.json",
   "app.aab",
+  "PLAYOPS_PLAN.md",
+  "docs/architecture.md",
+  "docs/decisions.md",
+  "docs/phase-4.15-plan.md",
+  "docs/phase-4.15-b4-probe-plan.md",
+  "docs/unapproved.md",
+  "docs/nested/credentials.md",
+  "docs/credentials.md/secret.json",
   "tests/example.test.ts",
   "src/index.ts",
   ".git/HEAD",

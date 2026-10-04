@@ -5,12 +5,12 @@
 # Google Play target application.
 google_play:
   package_name: "com.example.app" # Android package name
-  service_account_json: "" # Absolute path to service-account JSON (outside repo)
+  service_account_json: "" # External readable file; absolute or relative to cwd (no ~ expansion)
 
 # Agent runtime (Phase 2).
 agent:
-  max_steps: 20 # Agent loop step guard
-  approval_timeout_seconds: 300 # CLI approval prompt timeout
+  max_steps: 20 # Parsed runtime setting; current review/health CLI steps use fixed limits
+  approval_timeout_seconds: 300 # Parsed only; current interactive prompt has no timer
 
 # App health thresholds (Phase 5.4). All rules disabled by default.
 # Null or omitted = disabled. Active thresholds MUST be quoted exact decimal strings.

@@ -13,7 +13,11 @@
   },
   "files": [
     "dist/**/*.js",
-    "config/playops.example.yaml"
+    "config/playops.example.yaml",
+    "docs/credentials.md",
+    "docs/permissions-and-approvals.md",
+    "docs/audit-log.md",
+    "docs/release-pipeline.md"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
