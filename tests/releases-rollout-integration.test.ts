@@ -14,13 +14,17 @@ import {
 } from "../src/runtime/approvals/index.js";
 import { runAgent } from "../src/runtime/agent/index.js";
 import type { LlmAdapter } from "../src/runtime/llm/index.js";
+import { ToolRegistry } from "../src/runtime/tools/index.js";
 import { createReleaseComposition, type ReleaseComposition } from "../src/releases/composition.js";
 import {
   createReleaseRolloutIntent,
   type ReleaseRolloutIntent,
 } from "../src/releases/rollout-approval.js";
 import type { ReleaseState, ReleaseTrackState } from "../src/releases/index.js";
-import { RELEASES_UPDATE_ROLLOUT_FRACTION_TOOL_NAME } from "../src/releases/rollout-tool.js";
+import {
+  createReleaseRolloutTool,
+  RELEASES_UPDATE_ROLLOUT_FRACTION_TOOL_NAME,
+} from "../src/releases/rollout-tool.js";
 
 const packageName = "com.example.rollout";
 const targetTrack = "production";
@@ -317,13 +321,26 @@ async function runRollout(
   const dir = makeDir();
   const fake = fakePublisher(options.fake);
   const intent = options.intent ?? makeIntent();
-  const composition = createReleaseComposition(
-    configFor(dir),
-    { publisher: fake.publisher, now: () => new Date(fixedNow) },
-    { updateRolloutFraction: { intent } },
-  );
-  const binding = composition.updateRolloutFractionBinding;
-  if (!binding) throw new Error("rollout binding unavailable");
+  // Production composition has no blocked capabilities. The low-level fake
+  // workflow below belongs only to this offline runtime harness, not a bypass.
+  const composition = createReleaseComposition(configFor(dir), {
+    publisher: fake.publisher,
+    now: () => new Date(fixedNow),
+  });
+  const cleanupJournal = composition.cleanupJournal;
+  if (!cleanupJournal) throw new Error("offline rollout cleanup journal unavailable");
+  const rollout = createReleaseRolloutTool({
+    packageName,
+    intent,
+    gateway: composition.gateway,
+    sessionStore: composition.store,
+    cleanupJournal,
+    auditLedger: composition.ledger,
+    now: () => new Date(fixedNow),
+  });
+  const registry = new ToolRegistry();
+  registry.register(rollout.tool);
+  const binding = rollout.binding;
   if (options.activeEdit) {
     await composition.store.save({
       version: 1,
@@ -344,7 +361,7 @@ async function runRollout(
     : undefined;
   const result = await runAgent({
     llm: scriptedLlm(),
-    registry: composition.registry,
+    registry,
     bindings: [binding],
     messages: [{ role: "user", content: "Increase the approved staged rollout." }],
     limits: { maxSteps: 3, maxToolCalls: 1, maxTotalTokens: 10 },
@@ -354,15 +371,17 @@ async function runRollout(
     now: () => fixedNow,
     runId: () => "phase412-runtime-run",
   });
-  return { result, composition, fake, dir };
+  return { result, composition, rollout, registry, fake, dir };
 }
 
 describe("Phase 4.12 through the real Phase 2 runtime", () => {
   it("registers exactly destructive rollout control and uses empty model input", async () => {
     const run = await runRollout();
-    expect(run.composition.registry.has(RELEASES_UPDATE_ROLLOUT_FRACTION_TOOL_NAME)).toBe(true);
-    expect(run.composition.updateRolloutFractionTool?.permission).toBe("destructive");
-    expect(run.composition.updateRolloutFractionBinding?.llm.inputSchema).toEqual({
+    expect(run.composition.registry.has(RELEASES_UPDATE_ROLLOUT_FRACTION_TOOL_NAME)).toBe(false);
+    expect(run.registry.has(RELEASES_UPDATE_ROLLOUT_FRACTION_TOOL_NAME)).toBe(true);
+    expect(run.registry.list()).toHaveLength(1);
+    expect(run.rollout.tool.permission).toBe("destructive");
+    expect(run.rollout.binding.llm.inputSchema).toEqual({
       type: "object",
       properties: {},
       additionalProperties: false,

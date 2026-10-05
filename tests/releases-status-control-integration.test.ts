@@ -10,6 +10,7 @@ import {
 } from "../src/runtime/approvals/index.js";
 import { runAgent } from "../src/runtime/agent/index.js";
 import type { LlmAdapter } from "../src/runtime/llm/index.js";
+import { ToolRegistry } from "../src/runtime/tools/index.js";
 import { createReleaseComposition, type ReleaseComposition } from "../src/releases/composition.js";
 import {
   createHaltRolloutIntent,
@@ -18,6 +19,7 @@ import {
 } from "../src/releases/status-control-approval.js";
 import type { ReleaseState, ReleaseTrackState } from "../src/releases/index.js";
 import {
+  createReleaseStatusControlTool,
   HALT_ROLLOUT_TOOL_NAME,
   RESUME_ROLLOUT_TOOL_NAME,
 } from "../src/releases/status-control-tool.js";
@@ -287,16 +289,26 @@ async function runStatus(options: {
     ...options.fake,
   });
   const intent = makeIntent(options.operation);
-  const composition = createReleaseComposition(
-    configFor(dir),
-    { publisher: fake.publisher, now: () => new Date(fixedNow) },
-    options.operation === "halt" ? { haltRollout: { intent } } : { resumeRollout: { intent } },
-  );
-  const binding =
-    options.operation === "halt"
-      ? composition.haltRolloutBinding
-      : composition.resumeRolloutBinding;
-  if (!binding) throw new Error("status-control binding unavailable");
+  // Keep blocked options out of production composition. Only this offline
+  // fake harness registers the low-level status-control tool and real binding.
+  const composition = createReleaseComposition(configFor(dir), {
+    publisher: fake.publisher,
+    now: () => new Date(fixedNow),
+  });
+  const cleanupJournal = composition.cleanupJournal;
+  if (!cleanupJournal) throw new Error("offline status-control cleanup journal unavailable");
+  const statusControl = createReleaseStatusControlTool({
+    packageName,
+    intent,
+    gateway: composition.gateway,
+    sessionStore: composition.store,
+    cleanupJournal,
+    auditLedger: composition.ledger,
+    now: () => new Date(fixedNow),
+  });
+  const registry = new ToolRegistry();
+  registry.register(statusControl.tool);
+  const binding = statusControl.binding;
   const resolver = options.resolver
     ? {
         resolve: async (request: ApprovalRequest) =>
@@ -307,7 +319,7 @@ async function runStatus(options: {
     llm: scriptedLlm(
       options.operation === "halt" ? HALT_ROLLOUT_TOOL_NAME : RESUME_ROLLOUT_TOOL_NAME,
     ),
-    registry: composition.registry,
+    registry,
     bindings: [binding],
     messages: [{ role: "user", content: "perform status control" }],
     limits: { maxSteps: 3, maxToolCalls: 1, maxTotalTokens: 10 },
@@ -317,15 +329,21 @@ async function runStatus(options: {
     now: () => fixedNow,
     runId: () => "phase413-runtime-run",
   });
-  return { result, composition, fake };
+  return { result, composition, statusControl, registry, fake };
 }
 
 describe("Phase 4.13 through the real Phase 2 runtime", () => {
   it("registers HALT and RESUME as separate destructive capabilities and requires approval", async () => {
     const halt = await runStatus({ operation: "halt" });
     const resume = await runStatus({ operation: "resume" });
-    expect(halt.composition.haltRolloutTool?.permission).toBe("destructive");
-    expect(resume.composition.resumeRolloutTool?.permission).toBe("destructive");
+    expect(halt.composition.registry.has(HALT_ROLLOUT_TOOL_NAME)).toBe(false);
+    expect(resume.composition.registry.has(RESUME_ROLLOUT_TOOL_NAME)).toBe(false);
+    expect(halt.registry.get(HALT_ROLLOUT_TOOL_NAME).permission).toBe("destructive");
+    expect(resume.registry.get(RESUME_ROLLOUT_TOOL_NAME).permission).toBe("destructive");
+    expect(halt.registry.list()).toHaveLength(1);
+    expect(resume.registry.list()).toHaveLength(1);
+    expect(halt.statusControl.tool.permission).toBe("destructive");
+    expect(resume.statusControl.tool.permission).toBe("destructive");
     expect(halt.result.code).toBe("APPROVAL_REQUIRED");
     expect(resume.result.code).toBe("APPROVAL_REQUIRED");
     expect(halt.fake.calls.insert).toBe(0);

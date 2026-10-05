@@ -1,6 +1,6 @@
 {
   "name": "playops",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Independent AI agent/harness for Google Play and Android application operations.",
   "license": "MIT",
   "type": "module",

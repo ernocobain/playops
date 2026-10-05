@@ -29,11 +29,17 @@ import {
 import type { ReleaseCommitGateway } from "./gateway.js";
 import { ensureRemoteEditMatches, normalizeValidationResponse } from "./validate-edit-tool.js";
 import { loadReleaseEditSessionState, type ReleaseEditSessionStore } from "./session-store.js";
+import {
+  RELEASE_COMMIT_ATTEMPT_JOURNAL_VERSION,
+  type ReleaseCommitAttemptJournal,
+  type ReleaseCommitAttemptJournalRecord,
+} from "./commit-attempt-journal.js";
 
 export const RELEASES_COMMIT_EDIT_TOOL_NAME = "releases.commit_edit";
 
 export interface ReleaseCommitResult {
   readonly committed: true;
+  readonly commitAcknowledged: true;
   readonly targetTrack: string;
   readonly versionCode: string;
   readonly releaseStatus: ReleaseCommitIntent["releaseStatus"];
@@ -52,6 +58,13 @@ export interface ReleaseCommitToolOptions {
   readonly gateway: ReleaseCommitGateway;
   readonly sessionStore: ReleaseEditSessionStore;
   readonly auditLedger: ReleaseCommitAuditLedger;
+  readonly commitAttemptJournal: ReleaseCommitAttemptJournal;
+  /**
+   * Optional trusted pre-mutation snapshot digest, never note text. It is durable
+   * diagnostic/recovery evidence only and is deliberately NOT part of the approval
+   * digest, so it can never be sufficient on its own to prove NOT_COMMITTED.
+   */
+  readonly priorStateDigest?: string;
   readonly now?: () => Date;
 }
 
@@ -82,6 +95,7 @@ function createOutputSchema(): ToolSchema<ReleaseCommitResult> {
       const keys = Object.keys(value).sort();
       const expected = [
         "changesInReviewBehavior",
+        "commitAcknowledged",
         "committed",
         "liveReleaseVerified",
         "releaseStatus",
@@ -92,6 +106,7 @@ function createOutputSchema(): ToolSchema<ReleaseCommitResult> {
         keys.length !== expected.length ||
         keys.some((key, index) => key !== expected[index]) ||
         value.committed !== true ||
+        value.commitAcknowledged !== true ||
         value.liveReleaseVerified !== false ||
         value.changesInReviewBehavior !== RELEASE_COMMIT_REVIEW_BEHAVIOR ||
         typeof value.targetTrack !== "string" ||
@@ -102,6 +117,7 @@ function createOutputSchema(): ToolSchema<ReleaseCommitResult> {
       }
       return Object.freeze({
         committed: true,
+        commitAcknowledged: true,
         targetTrack: value.targetTrack,
         versionCode: value.versionCode,
         releaseStatus: value.releaseStatus as ReleaseCommitResult["releaseStatus"],
@@ -131,6 +147,7 @@ function attemptedCommitFailure(cause: unknown): ReleaseError {
       });
     }
     if (
+      cause.code === "COMMIT_ATTEMPT_JOURNAL_INVALID" ||
       cause.code === "COMMIT_RESPONSE_INVALID" ||
       cause.code === "COMMIT_FAILED" ||
       cause.code === "COMMIT_SESSION_CLEANUP_FAILED" ||
@@ -177,6 +194,7 @@ async function appendCommitAudit(
   now: () => Date,
   metadata: Record<string, unknown>,
   commitAttempted: boolean,
+  externalStateUncertainOnAuditFailure = commitAttempted,
 ): Promise<void> {
   try {
     await ledger.append({
@@ -195,7 +213,27 @@ async function appendCommitAudit(
     throw new ReleaseError(
       "COMMIT_AUDIT_FAILED",
       "Commit result could not be recorded safely in the audit log.",
-      { cause, externalStateUncertain: commitAttempted },
+      { cause, externalStateUncertain: externalStateUncertainOnAuditFailure },
+    );
+  }
+}
+
+async function assertApprovedTrackState(
+  gateway: ReleaseCommitGateway,
+  session: Parameters<ReleaseCommitGateway["getTrack"]>[0],
+  intent: ReleaseCommitIntent,
+): Promise<void> {
+  const currentTrack = await gateway.getTrack(session, intent.targetTrack);
+  if (currentTrack.track !== intent.targetTrack) {
+    throw new ReleaseError(
+      "TRACK_MISMATCH",
+      "Google Play returned a different target track than the approved intent.",
+    );
+  }
+  if (createReleaseCommitStateDigest(currentTrack) !== intent.stateDigest) {
+    throw new ReleaseError(
+      "COMMIT_STATE_CHANGED",
+      "The approved release state changed before commit; new approval is required.",
     );
   }
 }
@@ -219,6 +257,7 @@ export function createReleaseCommitTool(options: ReleaseCommitToolOptions): Rele
   const gateway = options?.gateway;
   const sessionStore = options?.sessionStore;
   const auditLedger = options?.auditLedger;
+  const journal = options?.commitAttemptJournal;
   const clock = options?.now ?? (() => new Date());
   if (
     !gateway ||
@@ -240,7 +279,27 @@ export function createReleaseCommitTool(options: ReleaseCommitToolOptions): Rele
     throw new ReleaseError("INVALID_ARGUMENT", "Commit audit ledger is invalid.");
   }
 
+  if (
+    !journal ||
+    typeof journal.prepare !== "function" ||
+    typeof journal.transition !== "function" ||
+    typeof journal.list !== "function"
+  ) {
+    throw new ReleaseError(
+      "COMMIT_ATTEMPT_JOURNAL_INVALID",
+      "Commit requires an explicitly configured durable commit-attempt journal.",
+      { externalStateUncertain: false },
+    );
+  }
   const approvalBinding = createReleaseCommitApprovalBinding(intent);
+  const requestDigest = approvalBinding.createRequestDigest({});
+  if (requestDigest !== intent.requestDigest) {
+    throw new ReleaseError(
+      "INVALID_COMMIT_INTENT",
+      "Commit request digest does not match the approved intent.",
+      { externalStateUncertain: false },
+    );
+  }
   const outputSchema = createOutputSchema();
   const description =
     "PUBLISH the exact approved Google Play edit for the configured app. This applies the edit to the application, is not merely draft-state work, and requires exact human approval. Google may invalidate other active edits for the application when this edit is committed. PlayOps uses ERROR_IF_IN_REVIEW and fails rather than cancelling an existing review. Phase 4.10 verifies the commit boundary and closes the local session; live release propagation remains unverified until Phase 4.11.";
@@ -254,6 +313,8 @@ export function createReleaseCommitTool(options: ReleaseCommitToolOptions): Rele
     async execute(input) {
       inputSchema.parse(input);
       let commitAttempted = false;
+      let commitAcknowledged = false;
+      let attempt: ReleaseCommitAttemptJournalRecord | undefined;
       try {
         const nowSeconds = epochSecondsFromDate(clock);
         const state = await loadReleaseEditSessionState(sessionStore, nowSeconds);
@@ -289,20 +350,26 @@ export function createReleaseCommitTool(options: ReleaseCommitToolOptions): Rele
         const remoteEdit = await gateway.getEdit(googleSession);
         ensureRemoteEditMatches(remoteEdit, session.editId, session.expiryTimeSeconds, nowSeconds);
 
-        const currentTrack = await gateway.getTrack(googleSession, intent.targetTrack);
-        if (currentTrack.track !== intent.targetTrack) {
-          throw new ReleaseError(
-            "TRACK_MISMATCH",
-            "Google Play returned a different target track than the approved intent.",
-          );
-        }
-        const currentStateDigest = createReleaseCommitStateDigest(currentTrack);
-        if (currentStateDigest !== intent.stateDigest) {
-          throw new ReleaseError(
-            "COMMIT_STATE_CHANGED",
-            "The approved release state changed before commit; new approval is required.",
-          );
-        }
+        await assertApprovedTrackState(gateway, googleSession, intent);
+        const preparedAt = clock().toISOString();
+        attempt = await journal.prepare({
+          version: RELEASE_COMMIT_ATTEMPT_JOURNAL_VERSION,
+          packageName,
+          editId: session.editId,
+          expiryTimeSeconds: session.expiryTimeSeconds,
+          targetTrack: intent.targetTrack,
+          versionCode: intent.versionCode,
+          releaseName: intent.releaseName,
+          releaseStatus: intent.releaseStatus,
+          expectedStateDigest: intent.stateDigest,
+          ...(options.priorStateDigest === undefined
+            ? {}
+            : { priorStateDigest: options.priorStateDigest }),
+          validationExpiryTimeSeconds: intent.validationExpiryTimeSeconds,
+          requestDigest,
+          attemptedAtUtc: preparedAt,
+          updatedAtUtc: preparedAt,
+        });
 
         let validationResponse: unknown;
         try {
@@ -314,14 +381,57 @@ export function createReleaseCommitTool(options: ReleaseCommitToolOptions): Rele
             externalStateUncertain: false,
           });
         }
-        normalizeValidationResponse(validationResponse, session.editId, nowSeconds);
+        const validation = normalizeValidationResponse(
+          validationResponse,
+          session.editId,
+          nowSeconds,
+        );
+        if (
+          compareEpochSeconds(validation.expiryTimeSeconds, intent.validationExpiryTimeSeconds) !==
+          0
+        ) {
+          throw new ReleaseError(
+            "COMMIT_VALIDATION_EXPIRY_MISMATCH",
+            "Fresh validation expiry does not match the approved commit intent; new approval is required.",
+            { externalStateUncertain: false },
+          );
+        }
 
+        // A fresh observation, not an atomic/CAS guarantee. No remote operation
+        // may be inserted between this final track check and commit transport.
+        await assertApprovedTrackState(gateway, googleSession, intent);
+        if (isReleaseEditSessionExpired(session, epochSecondsFromDate(clock))) {
+          throw new ReleaseError(
+            "EDIT_SESSION_EXPIRED",
+            "The approved edit expired before commit transport.",
+            { externalStateUncertain: false },
+          );
+        }
+        // This durable claim is intentionally before transport. A crash after
+        // the claim but before sending is conservatively reconciled, never retried.
+        attempt = await journal.transition(
+          attempt.attemptId,
+          "PREPARED",
+          "TRANSPORT_ATTEMPTED",
+          clock().toISOString(),
+        );
         commitAttempted = true;
         const commitResponseValue = await gateway.commitEdit(googleSession, {
           changesInReviewBehavior: RELEASE_COMMIT_REVIEW_BEHAVIOR,
           changesNotSentForReview: false,
         });
-        commitResponse(commitResponseValue, session.editId, nowSeconds);
+        commitResponse(commitResponseValue, session.editId, epochSecondsFromDate(clock));
+        commitAcknowledged = true;
+        // Persist acknowledgement before clearing the ordinary managed session.
+        // ACKNOWLEDGED survives local/audit failure and is NOT remote verification.
+        attempt = await journal.transition(
+          attempt.attemptId,
+          "TRANSPORT_ATTEMPTED",
+          "ACKNOWLEDGED",
+          clock().toISOString(),
+          // Historical fact that survives every later journal state.
+          { acknowledgedAtUtc: clock().toISOString() },
+        );
 
         try {
           await sessionStore.clear();
@@ -339,6 +449,7 @@ export function createReleaseCommitTool(options: ReleaseCommitToolOptions): Rele
 
         const result = Object.freeze({
           committed: true as const,
+          commitAcknowledged: true as const,
           targetTrack: intent.targetTrack,
           versionCode: intent.versionCode,
           releaseStatus: intent.releaseStatus,
@@ -352,6 +463,7 @@ export function createReleaseCommitTool(options: ReleaseCommitToolOptions): Rele
           {
             requestDigest: intent.requestDigest,
             committed: true,
+            commitAcknowledged: true,
             targetTrack: result.targetTrack,
             versionCode: result.versionCode,
             releaseStatus: result.releaseStatus,
@@ -363,17 +475,41 @@ export function createReleaseCommitTool(options: ReleaseCommitToolOptions): Rele
         );
         return result;
       } catch (cause) {
-        const mapped = commitAttempted ? attemptedCommitFailure(cause) : preCommitFailure(cause);
+        let mapped = commitAttempted ? attemptedCommitFailure(cause) : preCommitFailure(cause);
+        if (commitAttempted && attempt?.state === "TRANSPORT_ATTEMPTED") {
+          try {
+            attempt = await journal.transition(
+              attempt.attemptId,
+              "TRANSPORT_ATTEMPTED",
+              mapped.externalStateUncertain === false ? "RECONCILED_NOT_COMMITTED" : "AMBIGUOUS",
+              clock().toISOString(),
+            );
+          } catch (journalCause) {
+            // Never retry transport or erase the older durable recovery handle.
+            mapped = new ReleaseError(
+              "COMMIT_ATTEMPT_JOURNAL_INVALID",
+              "Commit outcome could not be durably recorded; the recovery handle is retained.",
+              {
+                cause: journalCause,
+                externalStateUncertain:
+                  mapped.externalStateUncertain === true || commitAcknowledged,
+              },
+            );
+          }
+        }
         await appendCommitAudit(
           auditLedger,
           "failure",
           clock,
           {
-            requestDigest: intent.requestDigest,
+            requestDigest,
+            commitAcknowledged,
+            liveReleaseVerified: false,
             errorCode: mapped.code,
             externalStateUncertain: mapped.externalStateUncertain === true,
           },
           commitAttempted,
+          mapped.externalStateUncertain === true,
         );
         throw mapped;
       }
@@ -384,6 +520,7 @@ export function createReleaseCommitTool(options: ReleaseCommitToolOptions): Rele
         const remaining = await sessionStore.load();
         return (
           result.committed === true &&
+          result.commitAcknowledged === true &&
           result.targetTrack === intent.targetTrack &&
           result.versionCode === intent.versionCode &&
           result.releaseStatus === intent.releaseStatus &&
@@ -421,6 +558,7 @@ export function createReleaseCommitTool(options: ReleaseCommitToolOptions): Rele
       const result = outputSchema.parse(output);
       return JSON.stringify({
         committed: result.committed,
+        commitAcknowledged: result.commitAcknowledged,
         targetTrack: result.targetTrack,
         versionCode: result.versionCode,
         releaseStatus: result.releaseStatus,

@@ -57,6 +57,8 @@ export interface ReleaseConfig {
    * release composition requires a non-empty path for those capabilities.
    */
   editCleanupJournalPath: string;
+  /** Explicit opt-in durable commit recovery path. No implicit filesystem default. */
+  commitAttemptJournalPath?: string;
 }
 
 /** 9Router provider config subset (Phase 3.5). */

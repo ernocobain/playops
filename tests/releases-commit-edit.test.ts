@@ -17,6 +17,13 @@ import {
   type ReleaseTrackState,
 } from "../src/releases/index.js";
 import type { ReleaseEditSessionStore } from "../src/releases/session-store.js";
+import type {
+  ReleaseCommitAttemptJournal,
+  ReleaseCommitAttemptPreparedInput,
+  ReleaseCommitAttemptJournalRecord,
+  ReleaseCommitAttemptState,
+  ReleaseCommitAttemptVerificationPatch,
+} from "../src/releases/commit-attempt-journal.js";
 
 const packageName = "com.example.release";
 const editId = "edit-phase410";
@@ -107,6 +114,56 @@ class FakeStore implements ReleaseEditSessionStore {
   }
 }
 
+class FakeCommitJournal implements ReleaseCommitAttemptJournal {
+  records: ReleaseCommitAttemptJournalRecord[] = [];
+  prepareError?: unknown;
+  transportError?: unknown;
+  ackError?: unknown;
+  async list() {
+    return this.records;
+  }
+  async prepare(input: ReleaseCommitAttemptPreparedInput) {
+    if (this.prepareError !== undefined) throw this.prepareError;
+    const record = {
+      ...input,
+      attemptId: "11111111-1111-4111-8111-111111111111",
+      state: "PREPARED" as const,
+    };
+    this.records.push(record);
+    return record;
+  }
+  async transition(
+    attemptId: string,
+    from: ReleaseCommitAttemptState,
+    to: ReleaseCommitAttemptState,
+    updatedAtUtc: string,
+    changes: ReleaseCommitAttemptVerificationPatch = {},
+  ) {
+    if (to === "TRANSPORT_ATTEMPTED" && this.transportError !== undefined)
+      throw this.transportError;
+    if (to === "ACKNOWLEDGED" && this.ackError !== undefined) throw this.ackError;
+    const index = this.records.findIndex((record) => record.attemptId === attemptId);
+    const previous = this.records[index];
+    if (!previous || previous.state !== from) throw new Error("journal state mismatch");
+    const record = { ...previous, ...changes, state: to, updatedAtUtc };
+    this.records[index] = record;
+    return record;
+  }
+  async updateVerification(
+    attemptId: string,
+    from: ReleaseCommitAttemptState,
+    updatedAtUtc: string,
+    changes: ReleaseCommitAttemptVerificationPatch,
+  ) {
+    const index = this.records.findIndex((record) => record.attemptId === attemptId);
+    const previous = this.records[index];
+    if (!previous || previous.state !== from) throw new Error("journal state mismatch");
+    const record = { ...previous, ...changes, updatedAtUtc };
+    this.records[index] = record;
+    return record;
+  }
+}
+
 class FakeAudit implements ReleaseCommitAuditLedger {
   readonly entries: NewAuditEntry[] = [];
   error?: unknown;
@@ -118,11 +175,14 @@ class FakeAudit implements ReleaseCommitAuditLedger {
 
 interface GatewayOptions {
   readonly currentTrack?: ReleaseTrackState;
+  readonly trackSequence?: readonly ReleaseTrackState[];
   readonly edit?: ReleaseEditReadback;
   readonly validation?: ReleaseEditReadback;
   readonly validationError?: unknown;
   readonly commitResult?: ReleaseEditReadback;
   readonly commitError?: unknown;
+  readonly onValidate?: () => void;
+  readonly onCommit?: () => void;
 }
 
 function gateway(options: GatewayOptions = {}): {
@@ -142,11 +202,13 @@ function gateway(options: GatewayOptions = {}): {
       calls.push("getTrack");
       expect(received.editId).toBe(editId);
       expect(receivedTrack).toBe(targetTrack);
-      return options.currentTrack ?? track();
+      const readIndex = calls.filter((call) => call === "getTrack").length - 1;
+      return options.trackSequence?.[readIndex] ?? options.currentTrack ?? track();
     },
     async validateEdit(received) {
       calls.push("validateEdit");
       expect(received.editId).toBe(editId);
+      options.onValidate?.();
       if (options.validationError !== undefined) throw options.validationError;
       return options.validation ?? { id: editId, expiryTimeSeconds };
     },
@@ -154,6 +216,7 @@ function gateway(options: GatewayOptions = {}): {
       calls.push("commitEdit");
       expect(received.editId).toBe(editId);
       commitPolicies.push(policy);
+      options.onCommit?.();
       if (options.commitError !== undefined) throw options.commitError;
       return options.commitResult ?? { id: editId, expiryTimeSeconds };
     },
@@ -167,20 +230,23 @@ function makeTool(
     readonly gatewayOptions?: GatewayOptions;
     readonly store?: FakeStore;
     readonly audit?: FakeAudit;
+    readonly journal?: FakeCommitJournal;
   } = {},
 ) {
   const store = options.store ?? new FakeStore();
   const audit = options.audit ?? new FakeAudit();
   const fake = gateway(options.gatewayOptions);
+  const journal = options.journal ?? new FakeCommitJournal();
   const built = createReleaseCommitTool({
     packageName,
     intent: options.intent ?? intent(),
     gateway: fake.gateway,
     sessionStore: store,
     auditLedger: audit,
+    commitAttemptJournal: journal,
     now: () => new Date(fixedNow),
   });
-  return { ...built, fake, store, audit };
+  return { ...built, fake, store, audit, journal };
 }
 
 async function execute(tool: ReturnType<typeof makeTool>["tool"]): Promise<ReleaseCommitResult> {
@@ -209,13 +275,20 @@ describe("Phase 4.10 commit tool contract", () => {
 
     expect(result).toEqual({
       committed: true,
+      commitAcknowledged: true,
       targetTrack,
       versionCode: "101",
       releaseStatus: "inProgress",
       changesInReviewBehavior: "ERROR_IF_IN_REVIEW",
       liveReleaseVerified: false,
     });
-    expect(built.fake.calls).toEqual(["getEdit", "getTrack", "validateEdit", "commitEdit"]);
+    expect(built.fake.calls).toEqual([
+      "getEdit",
+      "getTrack",
+      "validateEdit",
+      "getTrack",
+      "commitEdit",
+    ]);
     expect(built.fake.commitPolicies).toEqual([
       { changesInReviewBehavior: "ERROR_IF_IN_REVIEW", changesNotSentForReview: false },
     ]);
@@ -313,6 +386,155 @@ describe("Phase 4.10 commit tool contract", () => {
     expect(JSON.stringify(built.audit.entries)).not.toContain("PRIVATE-VALIDATE");
   });
 
+  it("R6 durably prepares before final validation and claims transport before commit gateway", async () => {
+    const journal = new FakeCommitJournal();
+    const seen: string[] = [];
+    const built = makeTool({
+      journal,
+      gatewayOptions: {
+        onValidate: () => {
+          expect(journal.records[0]?.state).toBe("PREPARED");
+          seen.push("validation-after-prepared");
+        },
+        onCommit: () => {
+          expect(journal.records[0]?.state).toBe("TRANSPORT_ATTEMPTED");
+          seen.push("commit-after-durable-claim");
+        },
+      },
+    });
+    await execute(built.tool);
+    expect(seen).toEqual(["validation-after-prepared", "commit-after-durable-claim"]);
+    expect(journal.records[0]?.state).toBe("ACKNOWLEDGED");
+  });
+  it("R6 rejects a tampered request digest before preparing trusted recovery evidence", () => {
+    const candidate = { ...intent(), requestDigest: "d".repeat(64) };
+    expect(() => makeTool({ intent: candidate })).toThrowError(
+      expect.objectContaining({ code: "INVALID_COMMIT_INTENT" }),
+    );
+  });
+
+  it("R6 retains acknowledged evidence while live release verification remains false", async () => {
+    const built = makeTool();
+    const result = await execute(built.tool);
+    expect(result).toMatchObject({ commitAcknowledged: true, liveReleaseVerified: false });
+    expect(built.journal.records).toHaveLength(1);
+    expect(built.journal.records[0]).toMatchObject({
+      state: "ACKNOWLEDGED",
+      acknowledgedAtUtc: fixedNow.toISOString(),
+      editId,
+      expiryTimeSeconds,
+      expectedStateDigest: intent().stateDigest,
+      requestDigest: intent().requestDigest,
+    });
+    expect(await built.store.load()).toBeUndefined();
+    expect(JSON.stringify(built.journal.records)).not.toContain(noteText);
+  });
+  it("R6 PREPARED persistence failure prevents all commit transport", async () => {
+    const journal = new FakeCommitJournal();
+    journal.prepareError = new Error("private write failure");
+    const built = makeTool({ journal });
+    await expect(execute(built.tool)).rejects.toMatchObject({ externalStateUncertain: false });
+    expect(built.fake.calls).not.toContain("commitEdit");
+    expect(await built.store.load()).toEqual(session());
+  });
+  it("R6 TRANSPORT_ATTEMPTED persistence failure prevents all commit transport", async () => {
+    const journal = new FakeCommitJournal();
+    journal.transportError = new Error("private sync failure");
+    const built = makeTool({ journal });
+    await expect(execute(built.tool)).rejects.toMatchObject({ externalStateUncertain: false });
+    expect(built.fake.calls).not.toContain("commitEdit");
+    expect(journal.records[0]?.state).toBe("PREPARED");
+    expect(await built.store.load()).toEqual(session());
+  });
+  it("R6 keeps an explicit rejection certain even when failure-audit append fails", async () => {
+    const audit = new FakeAudit();
+    audit.error = new Error("private audit failure");
+    const built = makeTool({
+      audit,
+      gatewayOptions: {
+        commitError: new ReleaseError("COMMIT_REJECTED", "Explicit rejection.", {
+          externalStateUncertain: false,
+        }),
+      },
+    });
+    await expect(execute(built.tool)).rejects.toMatchObject({
+      code: "COMMIT_AUDIT_FAILED",
+      externalStateUncertain: false,
+    });
+    expect(built.journal.records[0]?.state).toBe("RECONCILED_NOT_COMMITTED");
+    expect(await built.store.load()).toEqual(session());
+    expect(built.fake.calls.filter((call) => call === "commitEdit")).toHaveLength(1);
+  });
+
+  it("R6 retains durable acknowledgement evidence when the local session cannot be cleared", async () => {
+    const store = new FakeStore();
+    store.clearError = new Error("private clear failure");
+    const built = makeTool({ store });
+    await expect(execute(built.tool)).rejects.toMatchObject({
+      code: "COMMIT_SESSION_CLEANUP_FAILED",
+      externalStateUncertain: true,
+    });
+    expect(built.fake.calls.filter((call) => call === "commitEdit")).toHaveLength(1);
+    expect(built.journal.records).toHaveLength(1);
+    expect(built.journal.records[0]).toMatchObject({
+      state: "ACKNOWLEDGED",
+      acknowledgedAtUtc: fixedNow.toISOString(),
+      editId,
+      expectedStateDigest: intent().stateDigest,
+    });
+    expect(built.journal.records[0]?.attemptId).toBeTypeOf("string");
+    expect(await built.store.load()).toEqual(session());
+    expect(built.store.clearCalls).toBe(1);
+  });
+
+  it("R6 ambiguous commit preserves durable AMBIGUOUS recovery and never retries", async () => {
+    const built = makeTool({ gatewayOptions: { commitError: new Error("lost response") } });
+    await expect(execute(built.tool)).rejects.toMatchObject({ externalStateUncertain: true });
+    expect(built.fake.calls.filter((call) => call === "commitEdit")).toHaveLength(1);
+    expect(built.journal.records[0]?.state).toBe("AMBIGUOUS");
+    expect(await built.store.load()).toEqual(session());
+  });
+  it("R6 ACKNOWLEDGED persistence failure retains the session and never retries", async () => {
+    const journal = new FakeCommitJournal();
+    journal.ackError = new Error("lost journal acknowledgement");
+    const built = makeTool({ journal });
+    await expect(execute(built.tool)).rejects.toMatchObject({ externalStateUncertain: true });
+    expect(built.fake.calls.filter((call) => call === "commitEdit")).toHaveLength(1);
+    expect(await built.store.load()).toEqual(session());
+    expect(journal.records[0]?.state).toBe("AMBIGUOUS");
+  });
+
+  it("R6 blocks track state drift after validation without sending commit", async () => {
+    const changed = track({
+      releases: [
+        ...track().releases.slice(0, 1),
+        targetRelease({ releaseNotes: [{ language: "en-US", text: "changed after validation" }] }),
+      ],
+    });
+    const built = makeTool({ gatewayOptions: { trackSequence: [track(), changed] } });
+    await expect(execute(built.tool)).rejects.toMatchObject({
+      code: "COMMIT_STATE_CHANGED",
+      externalStateUncertain: false,
+    });
+    expect(built.fake.calls).toEqual(["getEdit", "getTrack", "validateEdit", "getTrack"]);
+    expect(built.fake.commitPolicies).toHaveLength(0);
+    expect(await built.store.load()).toEqual(session());
+    expect(built.store.clearCalls).toBe(0);
+  });
+
+  it("R6 blocks another future validation expiry before commit transport", async () => {
+    const built = makeTool({
+      gatewayOptions: { validation: { id: editId, expiryTimeSeconds: "2000000000" } },
+    });
+    await expect(execute(built.tool)).rejects.toMatchObject({
+      code: "COMMIT_VALIDATION_EXPIRY_MISMATCH",
+      externalStateUncertain: false,
+    });
+    expect(built.fake.calls).toEqual(["getEdit", "getTrack", "validateEdit"]);
+    expect(built.store.clearCalls).toBe(0);
+    expect(await built.store.load()).toEqual(session());
+  });
+
   it("blocks malformed, mismatched, and expired fresh validation responses", async () => {
     const cases: readonly ReleaseEditReadback[] = [
       { id: "other-edit", expiryTimeSeconds },
@@ -341,7 +563,13 @@ describe("Phase 4.10 commit tool contract", () => {
       code: "CHANGES_ALREADY_IN_REVIEW",
       externalStateUncertain: false,
     });
-    expect(built.fake.calls).toEqual(["getEdit", "getTrack", "validateEdit", "commitEdit"]);
+    expect(built.fake.calls).toEqual([
+      "getEdit",
+      "getTrack",
+      "validateEdit",
+      "getTrack",
+      "commitEdit",
+    ]);
     expect(built.store.clearCalls).toBe(0);
   });
 
@@ -351,7 +579,13 @@ describe("Phase 4.10 commit tool contract", () => {
       code: "COMMIT_FAILED",
       externalStateUncertain: true,
     });
-    expect(built.fake.calls).toEqual(["getEdit", "getTrack", "validateEdit", "commitEdit"]);
+    expect(built.fake.calls).toEqual([
+      "getEdit",
+      "getTrack",
+      "validateEdit",
+      "getTrack",
+      "commitEdit",
+    ]);
     expect(built.store.clearCalls).toBe(0);
   });
 

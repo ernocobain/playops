@@ -13,6 +13,30 @@ the repository maintainers.
 
 No unreleased changes yet.
 
+## [0.2.0] - 2026-10-05
+
+### Added
+
+- `releases.reconcile_commit`: crash/restart-safe recovery for a commit whose remote outcome is not yet proven. It reads release state back and reports exactly one of CASE 1 (proven committed), CASE 2 (proven not committed) or CASE 3 (still uncertain). It never issues a second commit and never deletes the original edit.
+- Durable commit-attempt journal, configured through the optional `release.commit_attempt_journal_path` / `PLAYOPS_RELEASE_COMMIT_ATTEMPT_JOURNAL_PATH`. Existing configuration without it stays loadable; commit and reconcile require it and fail closed without it.
+- Production capability maturity gate. Live execution of `releases.update_rollout_fraction`, `releases.halt_rollout` and `releases.resume_rollout` is blocked until each capability is separately hardened. Configuration, environment, model input and approvals cannot override the gate; a blocked tool never reaches the tool registry.
+
+### Changed
+
+- Hardened `releases.commit_edit`:
+  - the approved validation expiry must match the validation response exactly, otherwise no commit is attempted;
+  - the target track state digest is read and verified again immediately before the commit request;
+  - commit intent and outcome are persisted durably before and after commit transport;
+  - a commit is never retried automatically.
+- `commitAcknowledged` and `liveReleaseVerified` are separate output fields. `commitAcknowledged` reports whether a valid Google commit acknowledgement was durably observed; `liveReleaseVerified` reports whether the committed release was read back and verified. A commit proven committed only by remote verification may legitimately report `commitAcknowledged: false` with `liveReleaseVerified: true`.
+- Reconciliation classification is strict: CASE 1 requires proof that the expected state is current, CASE 2 requires proof that the original edit is still active or that commit transport was never attempted, and anything else is CASE 3. State that merely resembles the pre-commit state is reported as CASE 3 with uncertainty, never as a certain CASE 2.
+
+### Known limitations
+
+- If a temporary verification edit insert succeeds remotely but its response identity is lost, PlayOps cannot reconstruct that edit ID and fails conservatively as ambiguous/pending-cleanup instead of guessing.
+- Rollout fraction, halt and resume remain live-blocked and are **not** hardened.
+- The `releases.commit_edit` hardening has not been exercised against the live Google Play API. It has offline, fake-service acceptance only; live authorization is a separate decision.
+
 ## [0.1.1] - 2026-10-05
 
 ### Fixed

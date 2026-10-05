@@ -9,6 +9,7 @@ import {
   type ReleaseNotesAttachmentToolOptions,
 } from "../src/releases/release-notes-tool.js";
 import type { ReleaseConfigurationResult } from "../src/releases/configure-release-tool.js";
+import { normalizeReleaseTracks } from "../src/releases/index.js";
 import type {
   ReleaseBundle,
   ReleaseEditSession,
@@ -152,6 +153,95 @@ async function executeWith(options: ReleaseNotesAttachmentToolOptions) {
   const output = await composed.tool.execute({}, Object.freeze({}));
   return { composed, output };
 }
+
+describe("R6 protected normalized restoration snapshot conformance", () => {
+  it("round-trips completed internal notes with id preserved and en-US absent again", async () => {
+    const bundle: ReleaseBundle = { versionCode: "3", sha256: "a".repeat(64) };
+    const identity: ReleaseConfigurationResult = {
+      targetTrack: "internal",
+      releaseName: "3 (1.1)",
+      status: "completed",
+      versionCodes: ["3"],
+    };
+    const [initial] = normalizeReleaseTracks([
+      {
+        track: "internal",
+        releases: [
+          { name: "Unrelated draft", status: "draft", versionCodes: [] },
+          {
+            name: "3 (1.1)",
+            status: "completed",
+            versionCodes: ["3"],
+            releaseNotes: [{ language: "id", text: "  Catatan ID asli.  " }],
+            countryTargeting: { countries: ["ID", "US"], includeRestOfWorld: false },
+            inAppUpdatePriority: 5,
+          },
+        ],
+      },
+    ]);
+    if (!initial) throw new Error("normalized snapshot unavailable");
+    // In a future live probe this complete normalized snapshot belongs only in
+    // private scratch0700/file0600, never in audit or the commit-attempt journal.
+    const snapshot = structuredClone(initial);
+    let current = initial;
+    const updates: ReleaseTrackUpdateRequest[] = [];
+    const gateway: ReleaseConfigurationGateway = {
+      getEdit: async () => ({ id: editId, expiryTimeSeconds }),
+      listBundles: async () => [bundle],
+      getTrack: async (_session, trackName) => {
+        expect(trackName).toBe("internal");
+        return current;
+      },
+      updateTrack: async (_session, trackName, request) => {
+        expect(trackName).toBe("internal");
+        updates.push(request);
+        current = requestToTrack(request);
+        return current;
+      },
+    };
+    const common = {
+      packageName,
+      targetTrack: "internal",
+      configuredRelease: identity,
+      uploadedBundle: bundle,
+      sessionStore: memoryStore(trackedSession()),
+      gateway,
+      now: () => new Date("2026-10-05T10:00:00.000Z"),
+    };
+    const originalNotes = snapshot.releases.find((item) =>
+      item.versionCodes.includes("3"),
+    )?.releaseNotes;
+    if (!originalNotes) throw new Error("private original notes missing");
+    const temporary = createReleaseNotesAttachmentTool({
+      ...common,
+      localizedReleaseNotes: [
+        ...originalNotes,
+        { language: "en-US", text: "Offline R6 temporary marker." },
+      ],
+    });
+    const attached = await temporary.tool.execute({}, {});
+    expect(await temporary.tool.verify?.({}, attached, {})).toBe(true);
+    expect(current.releases.find((item) => item.versionCodes.includes("3"))?.releaseNotes).toEqual([
+      { language: "en-US", text: "Offline R6 temporary marker." },
+      ...originalNotes,
+    ]);
+    const restore = createReleaseNotesAttachmentTool({
+      ...common,
+      localizedReleaseNotes: originalNotes,
+    });
+    const restored = await restore.tool.execute({}, {});
+    expect(await restore.tool.verify?.({}, restored, {})).toBe(true);
+    expect(current).toEqual(snapshot);
+    expect(
+      current.releases
+        .find((item) => item.versionCodes.includes("3"))
+        ?.releaseNotes?.some((note) => note.language === "en-US"),
+    ).toBe(false);
+    expect(updates).toHaveLength(2);
+    // This proves PlayOps construction/verifier behavior with a fake gateway,
+    // NOT live Google locale-removal behavior or a commit+restore experiment.
+  });
+});
 
 describe("Phase 4.7 localized release-note validator", () => {
   it.each(["en", "en-US", "id", "de-AT", "pt-BR", "zh-Hant-TW"])(

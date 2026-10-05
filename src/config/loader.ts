@@ -37,6 +37,7 @@ export const ENV_VARS = {
   reviewCheckpointPath: "PLAYOPS_REVIEW_CHECKPOINT_PATH",
   releaseEditSessionPath: "PLAYOPS_RELEASE_EDIT_SESSION_PATH",
   releaseEditCleanupJournalPath: "PLAYOPS_RELEASE_EDIT_CLEANUP_JOURNAL_PATH",
+  releaseCommitAttemptJournalPath: "PLAYOPS_RELEASE_COMMIT_ATTEMPT_JOURNAL_PATH",
   llm9RouterBaseUrl: "PLAYOPS_LLM_9ROUTER_BASE_URL",
   llm9RouterModel: "PLAYOPS_LLM_9ROUTER_MODEL",
   llm9RouterApiKey: "PLAYOPS_LLM_9ROUTER_API_KEY",
@@ -172,10 +173,16 @@ export function parseConfigYaml(yamlText: string): PartialPlayOpsConfig {
 
   const editSessionPath = readString(release, "edit_session_path", "release");
   const editCleanupJournalPath = readString(release, "edit_cleanup_journal_path", "release");
-  if (editSessionPath !== undefined || editCleanupJournalPath !== undefined) {
+  const commitAttemptJournalPath = readString(release, "commit_attempt_journal_path", "release");
+  if (
+    editSessionPath !== undefined ||
+    editCleanupJournalPath !== undefined ||
+    commitAttemptJournalPath !== undefined
+  ) {
     result.release = {
       ...(editSessionPath !== undefined ? { editSessionPath } : {}),
       ...(editCleanupJournalPath !== undefined ? { editCleanupJournalPath } : {}),
+      ...(commitAttemptJournalPath !== undefined ? { commitAttemptJournalPath } : {}),
     };
   }
   const nrBaseUrl = readString(nineRouter, "base_url", "llm.nine_router");
@@ -246,10 +253,16 @@ export function envOverrides(env: Record<string, string | undefined>): PartialPl
 
   const editSessionPath = env[ENV_VARS.releaseEditSessionPath];
   const editCleanupJournalPath = env[ENV_VARS.releaseEditCleanupJournalPath];
-  if (editSessionPath !== undefined || editCleanupJournalPath !== undefined) {
+  const commitAttemptJournalPath = env[ENV_VARS.releaseCommitAttemptJournalPath];
+  if (
+    editSessionPath !== undefined ||
+    editCleanupJournalPath !== undefined ||
+    commitAttemptJournalPath !== undefined
+  ) {
     result.release = {
       ...(editSessionPath !== undefined ? { editSessionPath } : {}),
       ...(editCleanupJournalPath !== undefined ? { editCleanupJournalPath } : {}),
+      ...(commitAttemptJournalPath !== undefined ? { commitAttemptJournalPath } : {}),
     };
   }
 

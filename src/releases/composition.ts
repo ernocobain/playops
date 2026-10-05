@@ -71,6 +71,19 @@ import {
   type ReleaseEditSessionStore,
 } from "./session-store.js";
 import { createReleaseInspectionTool } from "./tool.js";
+import {
+  createFileReleaseCommitAttemptJournal,
+  type ReleaseCommitAttemptJournal,
+  type ReleaseCommitAttemptJournalRecord,
+} from "./commit-attempt-journal.js";
+import {
+  createReleaseCommitReconciliationTool,
+  type ReleaseCommitReconciliationMode,
+} from "./reconcile-commit-tool.js";
+import {
+  assertReleaseCapabilityLiveAllowed,
+  ReleaseCapabilityBlockedError,
+} from "./capability-maturity.js";
 
 /** Fixed safe message; configuration values and credential paths are not echoed. */
 export class ReleaseCompositionError extends Error {
@@ -104,7 +117,16 @@ export interface ReleaseCompositionOptions {
     "targetTrack" | "configuredRelease" | "uploadedBundle" | "localizedReleaseNotes"
   >;
   /** Operation-scoped exact Phase 4.9 intent for the Phase 4.10 publish boundary. */
-  readonly commitEdit?: Pick<ReleaseCommitToolOptions, "intent">;
+  readonly commitEdit?: Pick<ReleaseCommitToolOptions, "intent" | "priorStateDigest">;
+  /**
+   * Recovery of ONE durable attempt already recorded in the journal. The trusted
+   * snapshot and its immutable mode are operator/composition input, never model
+   * input, and both require an explicitly configured commit-attempt journal.
+   */
+  readonly reconcileCommit?: {
+    readonly candidate: ReleaseCommitAttemptJournalRecord;
+    readonly mode: ReleaseCommitReconciliationMode;
+  };
   /** Operation-scoped exact Phase 4.9 intent for safe Phase 4.11 Layer A. */
   readonly inspectCommittedRelease?: Pick<ReleaseCommitToolOptions, "intent">;
   /** Operation-scoped exact Phase 4.9 intent for destructive Phase 4.11 Layer B. */
@@ -156,6 +178,10 @@ export interface ReleaseComposition {
   readonly validateEditBinding: AgentToolBinding;
   readonly commitEditTool?: ReturnType<typeof createReleaseCommitTool>["tool"];
   readonly commitEditBinding?: AgentToolBinding;
+  /** Durable authority remains after managed-session clear; never inferred from audit. */
+  readonly commitAttemptJournal?: ReleaseCommitAttemptJournal;
+  readonly reconcileCommitTool?: ReturnType<typeof createReleaseCommitReconciliationTool>["tool"];
+  readonly reconcileCommitBinding?: AgentToolBinding;
   readonly inspectCommittedReleaseTool?: ReturnType<
     typeof createReleaseSummaryInspectionTool
   >["tool"];
@@ -226,6 +252,31 @@ export function createReleaseComposition(
   const packageName = validateReleaseConfig(config);
   if (!deps?.publisher) {
     throw new ReleaseCompositionError("Release operations require an Android Publisher client.");
+  }
+  // Maturity is independent of approval and applies to fake/live construction alike.
+  if (options.updateRolloutFraction !== undefined) {
+    assertReleaseCapabilityLiveAllowed("releases.update_rollout_fraction");
+  }
+  if (options.haltRollout !== undefined) {
+    assertReleaseCapabilityLiveAllowed("releases.halt_rollout");
+  }
+  if (options.resumeRollout !== undefined) {
+    assertReleaseCapabilityLiveAllowed("releases.resume_rollout");
+  }
+  const commitAttemptJournal =
+    typeof config.release.commitAttemptJournalPath === "string" &&
+    config.release.commitAttemptJournalPath.trim() !== ""
+      ? createFileReleaseCommitAttemptJournal(config.release.commitAttemptJournalPath, {
+          expectedPackageName: packageName,
+        })
+      : undefined;
+  if (
+    (options.commitEdit !== undefined || options.reconcileCommit !== undefined) &&
+    !commitAttemptJournal
+  ) {
+    throw new ReleaseCompositionError(
+      "Release commit capabilities require an explicitly configured commit-attempt journal path.",
+    );
   }
   const gateway = createAndroidPublisherReleaseGateway(deps.publisher, packageName);
   const store = createFileReleaseEditSessionStore(config.release.editSessionPath, {
@@ -318,16 +369,21 @@ export function createReleaseComposition(
     sessionStore: store,
     ...(deps.now ? { now: deps.now } : {}),
   } satisfies EditValidationToolOptions);
-  const commitEdit = options.commitEdit
-    ? createReleaseCommitTool({
-        packageName,
-        intent: options.commitEdit.intent,
-        gateway,
-        sessionStore: store,
-        auditLedger: ledger,
-        ...(deps.now ? { now: deps.now } : {}),
-      })
-    : undefined;
+  const commitEdit =
+    options.commitEdit && commitAttemptJournal
+      ? createReleaseCommitTool({
+          packageName,
+          intent: options.commitEdit.intent,
+          commitAttemptJournal,
+          ...(options.commitEdit.priorStateDigest === undefined
+            ? {}
+            : { priorStateDigest: options.commitEdit.priorStateDigest }),
+          gateway,
+          sessionStore: store,
+          auditLedger: ledger,
+          ...(deps.now ? { now: deps.now } : {}),
+        })
+      : undefined;
   const inspectCommittedRelease = options.inspectCommittedRelease
     ? createReleaseSummaryInspectionTool({
         packageName,
@@ -349,6 +405,19 @@ export function createReleaseComposition(
           auditLedger: ledger,
           ...(deps.now ? { now: deps.now } : {}),
         } satisfies ReleaseExactVerificationToolOptions)
+      : undefined;
+  const reconcileCommit =
+    options.reconcileCommit && commitAttemptJournal
+      ? createReleaseCommitReconciliationTool({
+          packageName,
+          candidate: options.reconcileCommit.candidate,
+          mode: options.reconcileCommit.mode,
+          gateway,
+          sessionStore: store,
+          journal: commitAttemptJournal,
+          auditLedger: ledger,
+          ...(deps.now ? { now: deps.now } : {}),
+        })
       : undefined;
   const updateRolloutFraction =
     options.updateRolloutFraction && cleanupJournal
@@ -418,6 +487,7 @@ export function createReleaseComposition(
   if (attachReleaseNotes) registry.register(attachReleaseNotes.tool);
   registry.register(validateEdit.tool);
   if (commitEdit) registry.register(commitEdit.tool);
+  if (reconcileCommit) registry.register(reconcileCommit.tool);
   if (inspectCommittedRelease) registry.register(inspectCommittedRelease.tool);
   if (verifyCommittedRelease) registry.register(verifyCommittedRelease.tool);
   if (updateRolloutFraction) registry.register(updateRolloutFraction.tool);
@@ -503,6 +573,13 @@ export function createReleaseComposition(
         }
       : {}),
     ...(cleanupJournal ? { cleanupJournal } : {}),
+    ...(commitAttemptJournal ? { commitAttemptJournal } : {}),
+    ...(reconcileCommit
+      ? {
+          reconcileCommitTool: reconcileCommit.tool,
+          reconcileCommitBinding: reconcileCommit.binding,
+        }
+      : {}),
     ...(inspectEditHygiene
       ? {
           inspectEditHygieneTool: inspectEditHygiene.tool,
@@ -536,7 +613,18 @@ export async function createLiveReleaseComposition(
   try {
     config = (factories.loadConfig ?? loadConfig)();
     packageName = validateReleaseConfig(config);
+    // Fail before credentials, auth, or Publisher creation; approval cannot bypass maturity.
+    if (options.updateRolloutFraction !== undefined) {
+      assertReleaseCapabilityLiveAllowed("releases.update_rollout_fraction");
+    }
+    if (options.haltRollout !== undefined) {
+      assertReleaseCapabilityLiveAllowed("releases.halt_rollout");
+    }
+    if (options.resumeRollout !== undefined) {
+      assertReleaseCapabilityLiveAllowed("releases.resume_rollout");
+    }
   } catch (cause) {
+    if (cause instanceof ReleaseCapabilityBlockedError) throw cause;
     if (cause instanceof ReleaseCompositionError) throw cause;
     if (cause instanceof ReleaseError) {
       throw new ReleaseCompositionError("Release configuration is invalid.", { cause });
@@ -560,6 +648,7 @@ export async function createLiveReleaseComposition(
     }
     return createReleaseComposition(config, { publisher }, options);
   } catch (cause) {
+    if (cause instanceof ReleaseCapabilityBlockedError) throw cause;
     if (cause instanceof ReleaseCompositionError) throw cause;
     throw new ReleaseCompositionError("Release dependencies could not be initialized.", {
       cause,

@@ -48,6 +48,7 @@ function configFor(dir: string): PlayOpsConfig {
     release: {
       editSessionPath: join(dir, "edit-session.json"),
       editCleanupJournalPath: join(dir, "edit-cleanup-journal.json"),
+      commitAttemptJournalPath: join(dir, "commit-attempt-journal.json"),
     },
   };
 }
@@ -367,6 +368,9 @@ describe("Phase 4.10 through the real Phase 2 runtime", () => {
       "edits.get",
       "edits.tracks.get",
       "edits.validate",
+      // Second pre-commit state-digest verification: the exact approved track
+      // state is re-read after validation and immediately before commit transport.
+      "edits.tracks.get",
       "edits.commit",
     ]);
     expect(fake.calls.commit).toBe(1);
@@ -376,6 +380,8 @@ describe("Phase 4.10 through the real Phase 2 runtime", () => {
     );
     expect(content).toEqual({
       committed: true,
+      // Acknowledged commit receipt is explicitly distinct from remote live-release verification.
+      commitAcknowledged: true,
       targetTrack: "production",
       versionCode: "101",
       releaseStatus: "inProgress",
