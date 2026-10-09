@@ -28,6 +28,7 @@ export {
   type LoggingConfig,
   type ReviewConfig,
   type ReleaseConfig,
+  type DaemonConfig,
   type NineRouterConfig,
   type LlmConfig,
 } from "./types.js";

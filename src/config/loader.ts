@@ -38,6 +38,10 @@ export const ENV_VARS = {
   releaseEditSessionPath: "PLAYOPS_RELEASE_EDIT_SESSION_PATH",
   releaseEditCleanupJournalPath: "PLAYOPS_RELEASE_EDIT_CLEANUP_JOURNAL_PATH",
   releaseCommitAttemptJournalPath: "PLAYOPS_RELEASE_COMMIT_ATTEMPT_JOURNAL_PATH",
+  daemonSocketPath: "PLAYOPS_DAEMON_SOCKET_PATH",
+  daemonPendingStorePath: "PLAYOPS_DAEMON_PENDING_STORE_PATH",
+  daemonClaimRoot: "PLAYOPS_DAEMON_CLAIM_ROOT",
+  daemonWriteIntentStorePath: "PLAYOPS_DAEMON_WRITE_INTENT_STORE_PATH",
   llm9RouterBaseUrl: "PLAYOPS_LLM_9ROUTER_BASE_URL",
   llm9RouterModel: "PLAYOPS_LLM_9ROUTER_MODEL",
   llm9RouterApiKey: "PLAYOPS_LLM_9ROUTER_API_KEY",
@@ -120,6 +124,7 @@ export function parseConfigYaml(yamlText: string): PartialPlayOpsConfig {
   const logging = section(doc, "logging");
   const review = section(doc, "review");
   const release = section(doc, "release");
+  const daemon = section(doc, "daemon");
   const llmRoot = section(doc, "llm");
   const nineRouter = section(llmRoot, "nine_router");
 
@@ -186,6 +191,25 @@ export function parseConfigYaml(yamlText: string): PartialPlayOpsConfig {
     };
   }
   const nrBaseUrl = readString(nineRouter, "base_url", "llm.nine_router");
+  const daemonSocketPath = readString(daemon, "socket_path", "daemon");
+  const daemonPendingStorePath = readString(daemon, "pending_store_path", "daemon");
+  const daemonClaimRoot = readString(daemon, "claim_root", "daemon");
+  const daemonWriteIntentStorePath = readString(daemon, "write_intent_store_path", "daemon");
+  if (
+    daemonSocketPath !== undefined ||
+    daemonPendingStorePath !== undefined ||
+    daemonClaimRoot !== undefined ||
+    daemonWriteIntentStorePath !== undefined
+  ) {
+    result.daemon = {
+      ...(daemonSocketPath !== undefined ? { socketPath: daemonSocketPath } : {}),
+      ...(daemonPendingStorePath !== undefined ? { pendingStorePath: daemonPendingStorePath } : {}),
+      ...(daemonClaimRoot !== undefined ? { claimRoot: daemonClaimRoot } : {}),
+      ...(daemonWriteIntentStorePath !== undefined
+        ? { writeIntentStorePath: daemonWriteIntentStorePath }
+        : {}),
+    };
+  }
   const nrModel = readString(nineRouter, "model", "llm.nine_router");
   const nrApiKey = readString(nineRouter, "api_key", "llm.nine_router");
   if (nrBaseUrl !== undefined || nrModel !== undefined || nrApiKey !== undefined) {
@@ -267,6 +291,25 @@ export function envOverrides(env: Record<string, string | undefined>): PartialPl
   }
 
   const nrBaseUrl = env[ENV_VARS.llm9RouterBaseUrl];
+  const daemonSocketPath = env[ENV_VARS.daemonSocketPath];
+  const daemonPendingStorePath = env[ENV_VARS.daemonPendingStorePath];
+  const daemonClaimRoot = env[ENV_VARS.daemonClaimRoot];
+  const daemonWriteIntentStorePath = env[ENV_VARS.daemonWriteIntentStorePath];
+  if (
+    daemonSocketPath !== undefined ||
+    daemonPendingStorePath !== undefined ||
+    daemonClaimRoot !== undefined ||
+    daemonWriteIntentStorePath !== undefined
+  ) {
+    result.daemon = {
+      ...(daemonSocketPath !== undefined ? { socketPath: daemonSocketPath } : {}),
+      ...(daemonPendingStorePath !== undefined ? { pendingStorePath: daemonPendingStorePath } : {}),
+      ...(daemonClaimRoot !== undefined ? { claimRoot: daemonClaimRoot } : {}),
+      ...(daemonWriteIntentStorePath !== undefined
+        ? { writeIntentStorePath: daemonWriteIntentStorePath }
+        : {}),
+    };
+  }
   const nrModel = env[ENV_VARS.llm9RouterModel];
   const nrApiKey = env[ENV_VARS.llm9RouterApiKey];
   if (nrBaseUrl !== undefined || nrModel !== undefined || nrApiKey !== undefined) {
@@ -289,6 +332,7 @@ function merge(base: PlayOpsConfig, override: PartialPlayOpsConfig): PlayOpsConf
     logging: { ...base.logging, ...override.logging },
     review: { ...base.review, ...override.review },
     release: { ...base.release, ...override.release },
+    daemon: { ...base.daemon, ...override.daemon },
     llm: {
       nineRouter: { ...base.llm.nineRouter, ...override.llm?.nineRouter },
     },

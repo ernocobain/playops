@@ -85,6 +85,10 @@ YAML keys and environment names below are the current loader's actual controls. 
 | `release.edit_session_path`           | `PLAYOPS_RELEASE_EDIT_SESSION_PATH`           | Empty; required by Release composition; managed edit identity.                                                                             |
 | `release.edit_cleanup_journal_path`   | `PLAYOPS_RELEASE_EDIT_CLEANUP_JOURNAL_PATH`   | Empty; required for journal-backed release verification/control/cleanup capabilities.                                                      |
 | `release.commit_attempt_journal_path` | `PLAYOPS_RELEASE_COMMIT_ATTEMPT_JOURNAL_PATH` | Empty; required for durable commit-attempt recovery (`releases.commit_edit`, `releases.reconcile_commit`). No implicit filesystem default. |
+| `daemon.socket_path`                  | `PLAYOPS_DAEMON_SOCKET_PATH`                  | `/run/playops/playops.sock`; owner-only (0600) Unix socket bound by `playopsd`.                                                            |
+| `daemon.pending_store_path`           | `PLAYOPS_DAEMON_PENDING_STORE_PATH`           | `/var/lib/playops/pending`; private 0700 directory for pending approvals.                                                                  |
+| `daemon.claim_root`                   | `PLAYOPS_DAEMON_CLAIM_ROOT`                   | `/var/lib/playops/claims`; private 0700 directory for exclusive request claims.                                                            |
+| `daemon.write_intent_store_path`      | `PLAYOPS_DAEMON_WRITE_INTENT_STORE_PATH`      | `/var/lib/playops/write-intents`; private 0700 directory for release write intents.                                                        |
 | `llm.nine_router.base_url`            | `PLAYOPS_LLM_9ROUTER_BASE_URL`                | Empty; HTTP(S) OpenAI-compatible 9Router endpoint for reviews.                                                                             |
 | `llm.nine_router.model`               | `PLAYOPS_LLM_9ROUTER_MODEL`                   | Empty; opaque configured provider model ID, not a built-in model choice.                                                                   |
 | `llm.nine_router.api_key`             | `PLAYOPS_LLM_9ROUTER_API_KEY`                 | Absent; optional provider bearer credential. Prefer secure environment injection, not committed YAML.                                      |
@@ -92,6 +96,22 @@ YAML keys and environment names below are the current loader's actual controls. 
 | `agent.approval_timeout_seconds`      | `PLAYOPS_AGENT_APPROVAL_TIMEOUT_SECONDS`      | `300`; parsed setting, **not wired to a timeout in the current interactive prompt**. Not the approval-token TTL.                           |
 
 Review commands require checkpoint, audit, Google and 9Router configuration; triage classifies and reply drafts using that provider. Doctor and health do not require an LLM provider. Release operation intent (artifact, track, release, notes, rollout) is trusted **operation-scoped composition input**, not additional YAML or model-selectable config. The installed release CLI does not compose those live operations; see the [release walkthrough](release-pipeline.md).
+
+### Production daemon (`playopsd`) paths
+
+`playopsd` is the application bootstrap that assembles the daemon core into one process. It is
+**not deployed support**: the socket is owner-only, so a separate operator user cannot connect yet,
+and no service unit, host user or directory is created by PlayOps.
+
+- Every path above (and `google_play.service_account_json`, `audit.log_path`, `release.edit_session_path`,
+  `release.edit_cleanup_journal_path`, `release.commit_attempt_journal_path`) must be **absolute**; a
+  relative value fails startup instead of resolving against the working directory.
+- The three `daemon.*` directories must already exist with mode `0700`; PlayOps never creates `/etc`,
+  `/var` or `/run`, never chowns or chmods a host path, and never removes an existing socket.
+- The operator trust anchor is the fixed path `/etc/playops/operator-approval.pub`. It is not
+  configurable through YAML, environment, CLI or the working directory.
+- Startup performs **no Google API call**: configuration, credential parsing and object construction
+  are local, and the daemon binds the local socket only.
 
 ### Provider and runtime hardening notes
 

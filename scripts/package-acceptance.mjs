@@ -428,6 +428,81 @@ try {
     !/(private_key|service_account|Authorization)/iu.test(help.stdout),
   );
 
+  // ------------------------------------------ Stage 4A.1 playopsd application
+  const daemonBinLink = join(consumer, "node_modules", ".bin", "playopsd");
+  check("npm exposed the installed playopsd bin", existsSync(daemonBinLink));
+  const daemonBinTarget = existsSync(daemonBinLink) ? readlinkSync(daemonBinLink) : "";
+  check(
+    "installed playopsd bin points at the compiled daemon entrypoint",
+    daemonBinTarget.replace(/\\/gu, "/").endsWith("playops/dist/daemon/main.js"),
+    daemonBinTarget,
+  );
+  check(
+    "installed playopsd bin is executable",
+    existsSync(daemonBinLink) && (statSync(daemonBinLink).mode & 0o111) !== 0,
+  );
+  const daemonPath = join(installed, "dist", "daemon", "main.js");
+  check(
+    "installed daemon entrypoint keeps its shebang and stays executable",
+    readFileSync(daemonPath, "utf8").startsWith("#!/usr/bin/env node") &&
+      (statSync(daemonPath).mode & 0o111) !== 0,
+  );
+  const networkBefore = traceLines(trace).length;
+  const daemonNoConfig = capture(process.execPath, ["--import", blocker, daemonPath], {
+    cwd: workdir,
+    env: cliEnv,
+  });
+  check(
+    "playopsd without --config fails closed with a usage exit code",
+    daemonNoConfig.status !== 0 && daemonNoConfig.stdout === "",
+  );
+  check(
+    "playopsd without --config explains the missing flag and leaks nothing",
+    /--config/u.test(daemonNoConfig.stderr) &&
+      !/(private_key|service_account|Authorization)/iu.test(daemonNoConfig.stderr),
+  );
+  const daemonCliHelp = capture(process.execPath, ["--import", blocker, daemonPath, "--help"], {
+    cwd: workdir,
+    env: cliEnv,
+  });
+  check("installed playopsd --help exits 0 without any Google call", daemonCliHelp.status === 0);
+  check(
+    "installed playopsd --help documents the daemon CLI surface",
+    /Usage: playopsd --config/u.test(daemonCliHelp.stdout) &&
+      /owner-only/u.test(daemonCliHelp.stdout),
+  );
+  const daemonVersion = capture(process.execPath, ["--import", blocker, daemonPath, "--version"], {
+    cwd: workdir,
+    env: cliEnv,
+  });
+  check(
+    "installed playopsd --version prints the packaged version and exits 0",
+    daemonVersion.status === 0 && /^playopsd \d+\.\d+\.\d+\n$/u.test(daemonVersion.stdout),
+    daemonVersion.stdout,
+  );
+  const daemonRelative = capture(
+    process.execPath,
+    ["--import", blocker, daemonPath, "--config", "relative/playops.yaml"],
+    { cwd: workdir, env: cliEnv },
+  );
+  check(
+    "playopsd rejects a relative --config before any daemon construction",
+    daemonRelative.status !== 0 && /absolute/u.test(daemonRelative.stderr),
+  );
+  const daemonMissing = capture(
+    process.execPath,
+    ["--import", blocker, daemonPath, "--config", join(workdir, "absent-playops.yaml")],
+    { cwd: workdir, env: cliEnv },
+  );
+  check(
+    "playopsd fails closed when the explicit config file is absent",
+    daemonMissing.status !== 0,
+  );
+  check(
+    "playopsd never listens, binds a socket, or calls Google for help/version/failure paths",
+    traceLines(trace).length === networkBefore && !existsSync(join(workdir, "playops.sock")),
+  );
+
   const noConfig = blocked(["doctor"]);
   let diagnostic = null;
   try {

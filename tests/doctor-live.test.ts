@@ -48,6 +48,12 @@ const CONFIG: PlayOpsConfig = {
   logging: { level: "info" },
   review: { checkpointPath: "" },
   release: { editSessionPath: "", editCleanupJournalPath: "" },
+  daemon: {
+    socketPath: "/run/playops/playops.sock",
+    pendingStorePath: "/var/lib/playops/pending",
+    claimRoot: "/var/lib/playops/claims",
+    writeIntentStorePath: "/var/lib/playops/write-intents",
+  },
   llm: { nineRouter: { baseUrl: "", model: "" } },
 };
 const CREDENTIALS: ServiceAccountCredentials = {

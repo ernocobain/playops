@@ -54,3 +54,27 @@ llm:
     base_url: "http://127.0.0.1:20128/v1" # OpenAI-compatible endpoint
     model: "gpt-4o-mini" # Opaque model identifier
     # api_key: "" # Optional; set via PLAYOPS_LLM_9ROUTER_API_KEY env var
+
+# Production daemon (`playopsd`) paths (Stage 4A.1).
+#
+# These paths are NOT provisioned automatically and the daemon never creates
+# /etc, /var or /run: deployment must create and own them before `playopsd` runs.
+# The daemon requires every one of them to be ABSOLUTE and fails closed
+# otherwise. Required layout:
+#   - the three directories must already exist with mode 0700
+#     (daemon.pending_store_path, daemon.claim_root, daemon.write_intent_store_path)
+#   - the socket parent directory must be a real, non-symlink directory that is
+#     not group- or other-writable, and the socket must not exist yet
+#   - release.edit_session_path, release.edit_cleanup_journal_path,
+#     release.commit_attempt_journal_path, audit.log_path and
+#     google_play.service_account_json must be absolute; an existing state file
+#     must be a regular 0600 file and its parent must not be group/other-writable
+#
+# `playopsd` binds an owner-only (0600) socket in this stage, so a separate
+# operator Unix user cannot connect yet: group access remains a later
+# deployment/core decision.
+daemon:
+  socket_path: "/run/playops/playops.sock"
+  pending_store_path: "/var/lib/playops/pending"
+  claim_root: "/var/lib/playops/claims"
+  write_intent_store_path: "/var/lib/playops/write-intents"

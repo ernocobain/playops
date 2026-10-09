@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  DEFAULT_CONFIG,
   loadServiceAccountCredentials,
   resolveCredentialPath,
   type CredentialError,
@@ -44,6 +45,7 @@ function configWith(path: string): PlayOpsConfig {
     logging: { level: "info" },
     review: { checkpointPath: "" },
     release: { editSessionPath: "", editCleanupJournalPath: "" },
+    daemon: DEFAULT_CONFIG.daemon,
     llm: { nineRouter: { baseUrl: "", model: "" } },
   };
 }

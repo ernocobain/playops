@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type { NewAuditEntry } from "../src/audit/types.js";
 import { ENV_VARS, parseConfigYaml } from "../src/config/loader.js";
+import { DEFAULT_CONFIG } from "../src/config/types.js";
 import { parseReviewCommand } from "../src/cli/reviews.js";
 import { parseHealthCommand } from "../src/cli/health.js";
 import { runReleasesCli } from "../src/cli/releases.js";
@@ -161,7 +162,13 @@ describe("Phase 6.4 operator documentation", () => {
       cwd: fileURLToPath(root),
       encoding: "utf8",
     });
-    expect(parseConfigYaml(read("config/playops.example.yaml"))).toEqual(parseConfigYaml(previous));
+    // The example gained the documented `daemon` section in Stage 4A.1; that is
+    // the only intended semantic change, and every other value still matches the
+    // committed example byte-for-byte after parsing.
+    expect(parseConfigYaml(read("config/playops.example.yaml"))).toEqual({
+      ...parseConfigYaml(previous),
+      daemon: DEFAULT_CONFIG.daemon,
+    });
   });
 
   it("synthetic JSONL examples match actual approval/verification event schemas", async () => {

@@ -26,7 +26,10 @@ describe("Phase 6.1 CLI-only distribution contract", () => {
     expect(metadata.main).toBeUndefined();
     expect(metadata.exports).toBeUndefined();
     expect(metadata.types).toBeUndefined();
-    expect(metadata.bin).toEqual({ playops: "dist/cli/index.js" });
+    expect(metadata.bin).toEqual({
+      playops: "dist/cli/index.js",
+      playopsd: "dist/daemon/main.js",
+    });
   });
   it("builds only before packing and ships runtime JS, the safe example and only operator guides", () => {
     expect(metadata.scripts.prepack).toBe("npm run build");

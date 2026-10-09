@@ -16,7 +16,7 @@ const metadata = () => ({
   private: true,
   type: "module",
   engines: { node: ">=24 <25" },
-  bin: { playops: "dist/cli/index.js" },
+  bin: { playops: "dist/cli/index.js", playopsd: "dist/daemon/main.js" },
   files: ["dist/**/*.js", "config/playops.example.yaml", "CHANGELOG.md", ...OPERATOR_DOC_FILES],
   dependencies: { ...RUNTIME_DEPENDENCIES },
   scripts: { prepack: "npm run build" },

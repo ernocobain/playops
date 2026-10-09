@@ -61,6 +61,24 @@ export interface ReleaseConfig {
   commitAttemptJournalPath?: string;
 }
 
+/**
+ * Stage 4A.1: production daemon (`playopsd`) paths.
+ *
+ * These are production-oriented defaults. The section is inert for the ordinary
+ * CLI — no CLI command reads it — and deployment owns provisioning the
+ * directories: the daemon validates them and never creates /etc, /var or /run.
+ */
+export interface DaemonConfig {
+  /** Owner-only (0600) Unix socket the daemon binds. */
+  socketPath: string;
+  /** Private 0700 directory holding pending approval records. */
+  pendingStorePath: string;
+  /** Private 0700 directory holding exclusive request-claim files. */
+  claimRoot: string;
+  /** Private 0700 directory holding release write-intent records. */
+  writeIntentStorePath: string;
+}
+
 /** 9Router provider config subset (Phase 3.5). */
 export interface NineRouterConfig {
   /** OpenAI-compatible base URL. */
@@ -84,6 +102,7 @@ export interface PlayOpsConfig {
   logging: LoggingConfig;
   review: ReviewConfig;
   release: ReleaseConfig;
+  daemon: DaemonConfig;
   llm: LlmConfig;
 }
 
@@ -96,6 +115,7 @@ export interface PartialPlayOpsConfig {
   logging?: Partial<LoggingConfig>;
   review?: Partial<ReviewConfig>;
   release?: Partial<ReleaseConfig>;
+  daemon?: Partial<DaemonConfig>;
   llm?: { nineRouter?: Partial<NineRouterConfig> };
 }
 
@@ -126,6 +146,12 @@ export const DEFAULT_CONFIG: PlayOpsConfig = {
   release: {
     editSessionPath: "",
     editCleanupJournalPath: "",
+  },
+  daemon: {
+    socketPath: "/run/playops/playops.sock",
+    pendingStorePath: "/var/lib/playops/pending",
+    claimRoot: "/var/lib/playops/claims",
+    writeIntentStorePath: "/var/lib/playops/write-intents",
   },
   llm: {
     nineRouter: {

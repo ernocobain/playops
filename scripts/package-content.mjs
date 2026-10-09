@@ -51,7 +51,11 @@ export const APPROVED_PACKAGE_FIELDS = Object.freeze({
   private: true,
   type: "module",
   engines: Object.freeze({ node: ">=24 <25" }),
-  bin: Object.freeze({ playops: "dist/cli/index.js" }),
+  bin: Object.freeze({
+    playops: "dist/cli/index.js",
+    /** Stage 4A.1: the production daemon application binary. */
+    playopsd: "dist/daemon/main.js",
+  }),
   files: Object.freeze([
     "dist/**/*.js",
     "config/playops.example.yaml",
@@ -81,6 +85,10 @@ export const REQUIRED_MODULE_FILES = Object.freeze([
   "dist/index.js",
   "dist/cli/index.js",
   "dist/cli/main.js",
+  "dist/daemon/main.js",
+  "dist/daemon/playopsd.js",
+  "dist/daemon/production-composition.js",
+  "dist/daemon/lifecycle.js",
   "dist/audit/index.js",
   "dist/config/index.js",
   "dist/runtime/agent/index.js",

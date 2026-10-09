@@ -6,6 +6,7 @@
  * and output rendering are exercised for real.
  */
 import { describe, expect, it } from "vitest";
+import { DEFAULT_CONFIG } from "../src/config/index.js";
 import type { PlayOpsConfig, ServiceAccountCredentials } from "../src/config/index.js";
 import { ConfigError } from "../src/config/index.js";
 import { CredentialError } from "../src/config/index.js";
@@ -36,6 +37,7 @@ function goodConfig(overrides: Partial<PlayOpsConfig["googlePlay"]> = {}): PlayO
     logging: { level: "info" },
     review: { checkpointPath: "" },
     release: { editSessionPath: "", editCleanupJournalPath: "" },
+    daemon: DEFAULT_CONFIG.daemon,
     llm: { nineRouter: { baseUrl: "", model: "" } },
   };
 }
