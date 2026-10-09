@@ -69,7 +69,7 @@ export interface ApprovalRequest extends ApprovalRequestInput {
   readonly expiresAt: string;
 }
 
-export type ApprovalSource = "interactive" | "token";
+export type ApprovalSource = "interactive" | "token" | "operator_signature";
 
 export interface ApprovalGrant {
   readonly record: ApprovalRecord;

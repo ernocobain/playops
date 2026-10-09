@@ -1,14 +1,26 @@
+import { createHash } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   createReleaseCommitIntent,
+  createReleaseCommitStateDigest,
   type ReleaseCommitIntent,
 } from "../src/releases/commit-approval.js";
+import { createFileReleaseCommitAttemptJournal } from "../src/releases/commit-attempt-journal.js";
 import {
   createReleaseSummaryInspectionTool,
   RELEASES_INSPECT_COMMITTED_RELEASE_TOOL_NAME,
 } from "../src/releases/inspect-committed-release-tool.js";
 import {
+  createReleaseStateVerificationApprovalBinding,
+  createReleaseStateVerificationIntent,
+  createReleaseStateVerificationRequestDigest,
   createReleaseVerificationIntent,
+  RELEASE_STATE_VERIFICATION_INTENT_VERSION,
+  RELEASE_STATE_VERIFICATION_OPERATION_KIND,
+  type ReleaseStateVerificationIntent,
   type ReleaseVerificationIntent,
 } from "../src/releases/readback-approval.js";
 import {
@@ -67,6 +79,65 @@ function makeCommitIntent(state = targetTrackState()): ReleaseCommitIntent {
 
 function makeVerificationIntent(state = targetTrackState()): ReleaseVerificationIntent {
   return createReleaseVerificationIntent(makeCommitIntent(state));
+}
+
+/** Stage 3E.1 Layer-B intent: durable identity plus the commit-state digest. */
+function makeStateVerificationIntent(
+  state = targetTrackState(),
+  expectedReleaseName = releaseName,
+): ReleaseStateVerificationIntent {
+  return createReleaseStateVerificationIntent({
+    packageName,
+    targetTrack,
+    versionCode,
+    expectedReleaseName,
+    expectedStateDigest: createReleaseCommitStateDigest(state),
+  });
+}
+
+function unrelatedRelease(overrides: Partial<ReleaseState> = {}): ReleaseState {
+  return {
+    name: "Older 99",
+    status: "completed",
+    versionCodes: ["99"],
+    releaseNotes: [],
+    ...overrides,
+  };
+}
+
+function twoReleaseTrack(order: readonly ReleaseState[]): ReleaseTrackState {
+  return { track: targetTrack, releases: [...order] };
+}
+
+/**
+ * The retired Phase 4.11 approval preimage for this same app/track/version,
+ * reproduced here so the domain-separation proof is independent of the new code.
+ */
+function legacyPhase411Digest(): string {
+  const preimage = {
+    expectedReleaseName: releaseName,
+    expectedReleaseNotes: [
+      { language: "en-US", text: noteText },
+      { language: "id", text: "Perbaikan stabilitas." },
+    ],
+    expectedStatus: "inProgress",
+    expectedUserFraction: 0.05,
+    operationKind: "exact_track_state_readback",
+    packageName,
+    targetTrack,
+    version: 1,
+    versionCode,
+  };
+  const stable = (value: unknown): string => {
+    if (value === null || typeof value !== "object") return JSON.stringify(value);
+    if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`;
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stable(record[key])}`)
+      .join(",")}}`;
+  };
+  return createHash("sha256").update(stable(preimage), "utf8").digest("hex");
 }
 
 function makeSummary(overrides: Partial<ReleaseSummaryState> = {}): ReleaseSummaryState {
@@ -203,7 +274,7 @@ function makeJournal(
 
 function buildLayerB(
   options: {
-    readonly intent?: ReleaseVerificationIntent;
+    readonly intent?: ReleaseStateVerificationIntent;
     readonly summaries?: readonly ReleaseSummaryState[];
     readonly track?: ReleaseTrackState;
     readonly createError?: unknown;
@@ -216,9 +287,10 @@ function buildLayerB(
   const gateways = makeGateways(options);
   const audit = makeAudit();
   const journal = options.journal ?? makeJournal();
+  const intent = options.intent ?? makeStateVerificationIntent();
   const tool = createReleaseExactVerificationTool({
     packageName,
-    intent: options.intent ?? makeVerificationIntent(),
+    intent,
     summaryGateway: gateways.summaryGateway,
     temporaryEditGateway: gateways.temporaryEditGateway,
     sessionStore: makeStore(options.activeSession),
@@ -226,7 +298,7 @@ function buildLayerB(
     auditLedger: audit,
     now: () => fixedNow,
   });
-  return { ...tool, ...gateways, audit, journal };
+  return { ...tool, ...gateways, audit, journal, intent };
 }
 
 describe("Phase 4.11 Layer A direct summary", () => {
@@ -291,6 +363,10 @@ describe("Phase 4.11 Layer B exact Track verification", () => {
     expect(summary).toContain("temporary Google Play edit");
     expect(summary).toContain("invalidate another active edit");
     expect(summary).toContain("No release mutation or edits.commit");
+    expect(summary).toContain(
+      `Expected committed-state digest: ${built.intent.expectedStateDigest}`,
+    );
+    expect(summary).toContain("no release-note or rollout-fraction comparison");
     expect(summary).not.toContain(noteText);
   });
 
@@ -310,7 +386,7 @@ describe("Phase 4.11 Layer B exact Track verification", () => {
     expect(built.calls).toEqual({ summaries: 1, create: 0, getTrack: 0, delete: 0 });
   });
 
-  it("verifies exact in-progress fraction and deletes the temporary edit once", async () => {
+  it("verifies the durable commit-state digest and deletes the temporary edit once", async () => {
     const built = buildLayerB();
     const result = await built.tool.execute({}, {});
     expect(result).toMatchObject({
@@ -324,7 +400,10 @@ describe("Phase 4.11 Layer B exact Track verification", () => {
       liveReleaseVerified: true,
       servingPropagationVerified: false,
       temporaryEditCleanupSucceeded: true,
+      verificationCleanupVerified: true,
     });
+    expect(result.observedStateDigest).toBe(built.intent.expectedStateDigest);
+    expect(result.observedStateDigest).toBe(createReleaseCommitStateDigest(targetTrackState()));
     expect(built.calls).toEqual({ summaries: 1, create: 1, getTrack: 1, delete: 1 });
     expect(JSON.stringify(built.audit.entries)).not.toContain(noteText);
     expect(JSON.stringify(built.audit.entries)).not.toContain("temporary-readback-edit");
@@ -394,11 +473,9 @@ describe("Phase 4.11 Layer B exact Track verification", () => {
     ["completed without fraction", targetRelease({ status: "completed", userFraction: undefined })],
     ["draft without fraction", targetRelease({ status: "draft", userFraction: undefined })],
   ])("supports exact %s semantics", async (_label, release) => {
-    const intent = makeVerificationIntent(targetTrackState(release));
-    const built = buildLayerB({
-      intent,
-      track: targetTrackState(release),
-    });
+    const state = targetTrackState(release);
+    const intent = makeStateVerificationIntent(state);
+    const built = buildLayerB({ intent, track: state });
     const result = await built.tool.execute({}, {});
     expect(result).toMatchObject({
       status: release.status,
@@ -408,34 +485,110 @@ describe("Phase 4.11 Layer B exact Track verification", () => {
     expect(built.calls.delete).toBe(1);
   });
 
+  /**
+   * Stage 3E.1 documents the deliberate move from selected-release field equality
+   * to full commit-state equality: every field of the canonical commit-state
+   * domain now participates in the decisive proof.
+   */
   it.each([
     [
-      "wrong status",
-      targetRelease({ status: "completed", userFraction: undefined }),
-      targetRelease(),
+      "changed release notes",
+      targetTrackState(
+        targetRelease({
+          releaseNotes: [
+            { language: "en-US", text: "different" },
+            { language: "id", text: "Perbaikan stabilitas." },
+          ],
+        }),
+      ),
+      targetTrackState(),
     ],
-    ["wrong fraction", targetRelease({ userFraction: 0.1 }), targetRelease()],
-    ["wrong release name", targetRelease({ name: "Other" }), targetRelease()],
     [
-      "wrong notes",
-      targetRelease({
-        releaseNotes: [
-          { language: "en-US", text: "different" },
-          { language: "id", text: "Perbaikan stabilitas." },
-        ],
-      }),
-      targetRelease(),
+      "changed rollout fraction",
+      targetTrackState(targetRelease({ userFraction: 0.1 })),
+      targetTrackState(),
     ],
-  ])("blocks %s and still deletes once", async (_label, actualRelease, expectedRelease) => {
-    const expectedIntent = makeVerificationIntent(targetTrackState(expectedRelease));
+    [
+      "changed release name",
+      targetTrackState(targetRelease({ name: "Other" })),
+      targetTrackState(),
+    ],
+    [
+      "changed status",
+      targetTrackState(targetRelease({ status: "completed", userFraction: undefined })),
+      targetTrackState(),
+    ],
+    [
+      "changed version codes",
+      targetTrackState(targetRelease({ versionCodes: [versionCode, "102"] })),
+      targetTrackState(),
+    ],
+    [
+      "changed country targeting",
+      targetTrackState(
+        targetRelease({ countryTargeting: { countries: ["ID"], includeRestOfWorld: true } }),
+      ),
+      targetTrackState(),
+    ],
+    [
+      "changed update priority",
+      targetTrackState(targetRelease({ inAppUpdatePriority: 3 })),
+      targetTrackState(),
+    ],
+    [
+      "an unrelated release changed",
+      twoReleaseTrack([targetRelease(), unrelatedRelease({ name: "Older 98" })]),
+      twoReleaseTrack([targetRelease(), unrelatedRelease()]),
+    ],
+  ])("blocks %s and still deletes once", async (_label, actualState, expectedState) => {
     const built = buildLayerB({
-      intent: expectedIntent,
-      track: targetTrackState(actualRelease),
+      intent: makeStateVerificationIntent(expectedState),
+      track: actualState,
     });
     await expect(built.tool.execute({}, {})).rejects.toMatchObject({
       code: "VERIFICATION_STATE_MISMATCH",
+      externalStateUncertain: false,
     });
     expect(built.calls).toEqual({ summaries: 1, create: 1, getTrack: 1, delete: 1 });
+  });
+
+  it("still matches release-array reordering that is equivalent under the commit-state digest", async () => {
+    const expectedState = twoReleaseTrack([targetRelease(), unrelatedRelease()]);
+    const actualState = twoReleaseTrack([unrelatedRelease(), targetRelease()]);
+    expect(createReleaseCommitStateDigest(expectedState)).toBe(
+      createReleaseCommitStateDigest(actualState),
+    );
+    const built = buildLayerB({
+      intent: makeStateVerificationIntent(expectedState),
+      track: actualState,
+    });
+    const result = await built.tool.execute({}, {});
+    expect(result.exactTrackStateVerified).toBe(true);
+    expect(result.observedStateDigest).toBe(built.intent.expectedStateDigest);
+    expect(built.calls).toEqual({ summaries: 1, create: 1, getTrack: 1, delete: 1 });
+  });
+
+  it("fails closed with a definite mismatch when the observed track cannot be canonicalized", async () => {
+    const uncanonicalizable = {
+      track: targetTrack,
+      releases: [
+        {
+          name: releaseName,
+          status: "bogus-status",
+          versionCodes: ["not-a-version-code"],
+        },
+      ],
+    } as unknown as ReleaseTrackState;
+    const built = buildLayerB({ track: uncanonicalizable });
+    const failure = (await built.tool.execute({}, {}).then(
+      () => undefined,
+      (cause: unknown) => cause as { code?: string; cause?: unknown },
+    )) as { code?: string; cause?: unknown } | undefined;
+    expect(failure?.code).toBe("VERIFICATION_STATE_MISMATCH");
+    // Only the canonicalization branch carries a cause; a plain mismatch does not.
+    expect(failure?.cause).toBeDefined();
+    expect(built.calls).toEqual({ summaries: 1, create: 1, getTrack: 1, delete: 1 });
+    expect(built.journal.entries.size).toBe(0);
   });
 
   it("marks cleanup failure uncertain and never retries delete", async () => {
@@ -470,6 +623,152 @@ describe("Phase 4.11 Layer B exact Track verification", () => {
     const result = await built.tool.execute({}, {});
     const before = { ...built.calls };
     await expect(built.tool.verify?.({}, result, {})).resolves.toBe(true);
+    expect(result.observedStateDigest).toBe(built.intent.expectedStateDigest);
     expect(built.calls).toEqual(before);
+  });
+});
+
+describe("Stage 3E.1 durable commit-state digest domain", () => {
+  it("uses createReleaseCommitStateDigest for the commit intent and the verification expectation", () => {
+    const state = targetTrackState();
+    const commit = makeCommitIntent(state);
+    expect(commit.stateDigest).toBe(createReleaseCommitStateDigest(state));
+    const intent = makeStateVerificationIntent(state);
+    expect(intent.expectedStateDigest).toBe(commit.stateDigest);
+    expect(intent.version).toBe(RELEASE_STATE_VERIFICATION_INTENT_VERSION);
+    expect(intent.operationKind).toBe(RELEASE_STATE_VERIFICATION_OPERATION_KIND);
+    expect(intent.expectedStateDigest).toMatch(/^[0-9a-f]{64}$/u);
+  });
+
+  it("rejects evidence without a durable digest or a release identity", () => {
+    const digest = createReleaseCommitStateDigest(targetTrackState());
+    const base = { packageName, targetTrack, versionCode, expectedReleaseName: releaseName };
+    for (const bad of [
+      { ...base, expectedStateDigest: "short" },
+      { ...base, expectedStateDigest: "A".repeat(64) },
+      { ...base, expectedReleaseName: "   ", expectedStateDigest: digest },
+    ]) {
+      expect(() => createReleaseStateVerificationIntent(bad)).toThrowError(
+        expect.objectContaining({ code: "INVALID_COMMIT_INTENT" }),
+      );
+    }
+  });
+
+  it("emits the observed digest as journal-ready evidence without conversion", async () => {
+    const built = buildLayerB();
+    const result = await built.tool.execute({}, {});
+    expect(result.observedStateDigest).toBe(built.intent.expectedStateDigest);
+    expect(result.verificationCleanupVerified).toBe(true);
+    const serialized = JSON.parse(
+      built.binding.serializeResult(result, {
+        toolName: RELEASES_VERIFY_COMMITTED_RELEASE_TOOL_NAME,
+        permission: "destructive",
+        required: true,
+        code: "VERIFIED",
+        verified: true,
+      } as never),
+    ) as Record<string, unknown>;
+    expect(serialized.observedStateDigest).toBe(result.observedStateDigest);
+    expect(serialized.verificationCleanupVerified).toBe(true);
+  });
+});
+
+describe("Stage 3E.1 verification approval domain", () => {
+  it("binds the durable commit-state digest and never the retired field-comparison preimage", () => {
+    const intent = makeStateVerificationIntent();
+    const approval = createReleaseStateVerificationApprovalBinding(intent);
+    expect(approval.permission).toBe("destructive");
+    const digest = approval.createRequestDigest({});
+    expect(digest).toBe(createReleaseStateVerificationRequestDigest(intent));
+    expect(digest).toMatch(/^[0-9a-f]{64}$/u);
+    const legacy = legacyPhase411Digest();
+    expect(legacy).toMatch(/^[0-9a-f]{64}$/u);
+    expect(legacy).not.toBe(digest);
+  });
+
+  it("keeps the production tool name and the destructive permission", () => {
+    const built = buildLayerB();
+    expect(built.tool.name).toBe(RELEASES_VERIFY_COMMITTED_RELEASE_TOOL_NAME);
+    expect(built.tool.permission).toBe("destructive");
+    expect(built.binding.approval?.createRequestDigest({})).toBe(
+      createReleaseStateVerificationRequestDigest(built.intent),
+    );
+  });
+
+  it("removes the retired Phase 4.11 approval constructors from the module", async () => {
+    const module = await import("../src/releases/readback-approval.js");
+    expect("createReleaseVerificationApprovalBinding" in module).toBe(false);
+    expect("createReleaseVerificationRequestDigest" in module).toBe(false);
+  });
+});
+
+describe("Stage 3E.1 reconciliation compatibility (real journal)", () => {
+  it("accepts the observed digest as verificationObservedStateDigest and permits REMOTE_VERIFIED", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "playops-3e1-journal-"));
+    try {
+      const journal = createFileReleaseCommitAttemptJournal(join(dir, "commit-attempt.json"), {
+        expectedPackageName: packageName,
+      });
+      const built = buildLayerB();
+      const result = await built.tool.execute({}, {});
+      const digest = result.observedStateDigest;
+      const now = fixedNow.toISOString();
+      const attempt = await journal.prepare({
+        version: 1,
+        packageName,
+        editId: "managed-edit-411",
+        expiryTimeSeconds,
+        targetTrack,
+        versionCode,
+        releaseName,
+        releaseStatus: "inProgress",
+        expectedStateDigest: digest,
+        validationExpiryTimeSeconds: expiryTimeSeconds,
+        requestDigest: "b".repeat(64),
+        attemptedAtUtc: now,
+        updatedAtUtc: now,
+      });
+      await journal.transition(attempt.attemptId, "PREPARED", "TRANSPORT_ATTEMPTED", now);
+      await journal.transition(attempt.attemptId, "TRANSPORT_ATTEMPTED", "ACKNOWLEDGED", now, {
+        acknowledgedAtUtc: now,
+      });
+      // The journal admits verification evidence only in its ordered lifecycle,
+      // exactly as the production reconciliation path writes it.
+      await journal.updateVerification(attempt.attemptId, "ACKNOWLEDGED", now, {
+        verificationInsertAttempted: true,
+      });
+      await journal.updateVerification(attempt.attemptId, "ACKNOWLEDGED", now, {
+        verificationEditId: "temporary-verify-edit",
+        verificationEditExpiryTimeSeconds: expiryTimeSeconds,
+      });
+      await journal.updateVerification(attempt.attemptId, "ACKNOWLEDGED", now, {
+        verificationObservedStateDigest: digest,
+        verificationObservedAtUtc: now,
+      });
+      await journal.updateVerification(attempt.attemptId, "ACKNOWLEDGED", now, {
+        verificationPreDeleteReadVerified: true,
+      });
+      await journal.updateVerification(attempt.attemptId, "ACKNOWLEDGED", now, {
+        verificationDeleteAttempted: true,
+      });
+      await journal.updateVerification(attempt.attemptId, "ACKNOWLEDGED", now, {
+        verificationDeleteAcknowledged: true,
+      });
+      const verified = await journal.updateVerification(attempt.attemptId, "ACKNOWLEDGED", now, {
+        verificationCleanupVerified: true,
+      });
+      // Exactly the precondition reconciliation checks before advancing.
+      expect(verified.verificationObservedStateDigest).toBe(verified.expectedStateDigest);
+      expect(verified.verificationCleanupVerified).toBe(true);
+      const advanced = await journal.transition(
+        attempt.attemptId,
+        "ACKNOWLEDGED",
+        "REMOTE_VERIFIED",
+        now,
+      );
+      expect(advanced.state).toBe("REMOTE_VERIFIED");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

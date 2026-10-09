@@ -1,10 +1,17 @@
 /**
- * Phase 4.11 Layer B — destructive exact TrackRelease verification.
+ * Phase 4.11 Layer B — destructive exact committed-state verification.
  *
  * The direct Layer A summary GET runs first. Only after it observes the expected
  * release does this tool create one temporary edit, read the exact Track state,
  * and delete that temporary edit exactly once. It never commits or changes a
  * release/track.
+ *
+ * Stage 3E.1: the decisive proof is the durable commit-state digest —
+ * `createReleaseCommitStateDigest(observedTrack) === intent.expectedStateDigest`.
+ * Release-note and rollout-fraction field comparison was removed because that
+ * expectation is not durably stored after an acknowledged commit, while the
+ * digest already covers the whole normalized track (release notes, name, status,
+ * rollout fraction, version codes, country targeting, update priority).
  */
 import type { NewAuditEntry } from "../audit/index.js";
 import type { AgentToolBinding } from "../runtime/agent/index.js";
@@ -15,20 +22,27 @@ import {
   epochSecondsFromDate,
   parseGooglePlayEditSession,
   ReleaseError,
+  type ReleaseState,
   type ReleaseStatus,
+  type ReleaseTrackState,
 } from "./index.js";
 import type { ReleaseEditSessionStore } from "./session-store.js";
 import type { ReleaseSummaryGateway, ReleaseTemporaryEditVerificationGateway } from "./gateway.js";
 import type { ReleaseEditCleanupJournal } from "./cleanup-journal.js";
 import {
-  createReleaseVerificationApprovalBinding,
-  createReleaseVerificationRequestDigest,
-  type ReleaseVerificationIntent,
+  ReleaseVerificationEvidencePersistenceError,
+  type ReleaseVerificationEvidenceEvent,
+  type ReleaseVerificationEvidenceSink,
+} from "./verification-evidence.js";
+import { createReleaseCommitStateDigest } from "./commit-approval.js";
+import {
+  createReleaseStateVerificationApprovalBinding,
+  createReleaseStateVerificationRequestDigest,
+  type ReleaseStateVerificationIntent,
   RELEASES_VERIFY_COMMITTED_RELEASE_TOOL_NAME,
 } from "./readback-approval.js";
 import {
-  inspectDirectReleaseSummary,
-  verifyExactTrackState,
+  inspectDirectReleaseSummaryForIdentity,
   type DirectReleaseSummaryEvidence,
 } from "./readback.js";
 
@@ -45,8 +59,16 @@ export interface ExactReleaseVerificationResult {
   readonly exactTrackStateVerified: true;
   readonly liveReleaseVerified: true;
   readonly servingPropagationVerified: false;
+  /**
+   * The commit-state digest actually observed through the temporary edit. Stage
+   * 3E consumes it directly as the commit-attempt journal's
+   * `verificationObservedStateDigest` — same helper, same domain, no conversion.
+   */
+  readonly observedStateDigest: string;
   /** Internal evidence consumed by the Phase 2 verifier; omitted by serialization. */
   readonly temporaryEditCleanupSucceeded: true;
+  /** Durable cleanup proof; the commit-attempt journal field of the same name. */
+  readonly verificationCleanupVerified: true;
   /** Internal trusted-state binding; omitted by serialization. */
   readonly verificationRequestDigest: string;
 }
@@ -57,7 +79,7 @@ export interface ReleaseExactVerificationAuditLedger {
 
 export interface ReleaseExactVerificationToolOptions {
   readonly packageName: string;
-  readonly intent: ReleaseVerificationIntent;
+  readonly intent: ReleaseStateVerificationIntent;
   readonly summaryGateway: ReleaseSummaryGateway;
   readonly temporaryEditGateway: ReleaseTemporaryEditVerificationGateway;
   readonly sessionStore: ReleaseEditSessionStore;
@@ -67,6 +89,8 @@ export interface ReleaseExactVerificationToolOptions {
    */
   readonly cleanupJournal: ReleaseEditCleanupJournal;
   readonly auditLedger: ReleaseExactVerificationAuditLedger;
+  /** Trusted internal lifecycle consumer; never supplied through tool input. */
+  readonly evidenceSink?: ReleaseVerificationEvidenceSink;
   readonly now?: () => Date;
 }
 
@@ -112,6 +136,7 @@ function parseResult(value: unknown): ExactReleaseVerificationResult {
   const allowed = new Set([
     "exactTrackStateVerified",
     "liveReleaseVerified",
+    "observedStateDigest",
     "releaseLifecycleState",
     "releaseName",
     "releaseObserved",
@@ -119,6 +144,7 @@ function parseResult(value: unknown): ExactReleaseVerificationResult {
     "status",
     "targetTrack",
     "temporaryEditCleanupSucceeded",
+    "verificationCleanupVerified",
     "verificationRequestDigest",
     "userFraction",
     "versionCode",
@@ -140,7 +166,10 @@ function parseResult(value: unknown): ExactReleaseVerificationResult {
     value.exactTrackStateVerified !== true ||
     value.liveReleaseVerified !== true ||
     value.servingPropagationVerified !== false ||
+    typeof value.observedStateDigest !== "string" ||
+    !/^[0-9a-f]{64}$/u.test(value.observedStateDigest) ||
     value.temporaryEditCleanupSucceeded !== true ||
+    value.verificationCleanupVerified !== true ||
     typeof value.verificationRequestDigest !== "string" ||
     !/^[0-9a-f]{64}$/u.test(value.verificationRequestDigest)
   ) {
@@ -161,9 +190,30 @@ function parseResult(value: unknown): ExactReleaseVerificationResult {
     exactTrackStateVerified: true,
     liveReleaseVerified: true,
     servingPropagationVerified: false,
+    observedStateDigest: value.observedStateDigest,
     temporaryEditCleanupSucceeded: true,
+    verificationCleanupVerified: true,
     verificationRequestDigest: value.verificationRequestDigest,
   });
+}
+
+/**
+ * The single observed release carrying the verified versionCode, used only for
+ * reporting status and rollout fraction. Unreachable after a successful digest
+ * match (the expected state contained exactly one such release), but it fails
+ * closed instead of guessing.
+ */
+function observedRelease(track: ReleaseTrackState, versionCode: string): ReleaseState {
+  const matches = track.releases.filter((release) => release.versionCodes.includes(versionCode));
+  const release = matches.length === 1 ? matches[0] : undefined;
+  if (!release) {
+    throw new ReleaseError(
+      "VERIFICATION_STATE_MISMATCH",
+      "The observed committed track does not expose exactly one release for the verified version.",
+      { externalStateUncertain: false },
+    );
+  }
+  return release;
 }
 
 async function appendAudit(
@@ -196,6 +246,7 @@ function auditFailure(cause: unknown): ReleaseError {
 }
 
 function mapFailure(cause: unknown): ReleaseError {
+  if (cause instanceof ReleaseVerificationEvidencePersistenceError) return cause;
   if (cause instanceof ReleaseError) {
     if (
       cause.code === "COMMITTED_RELEASE_NOT_OBSERVED" ||
@@ -233,7 +284,7 @@ function validateTemporaryEdit(
   value: unknown,
   packageName: string,
   nowSeconds: string,
-): ReturnType<typeof parseGooglePlayEditSession> {
+): ReturnType<typeof parseGooglePlayEditSession> & { readonly expiryTimeSeconds: string } {
   let session: ReturnType<typeof parseGooglePlayEditSession>;
   try {
     session = parseGooglePlayEditSession(value, packageName);
@@ -254,7 +305,7 @@ function validateTemporaryEdit(
       { externalStateUncertain: true },
     );
   }
-  return session;
+  return Object.freeze({ ...session, expiryTimeSeconds: session.expiryTimeSeconds });
 }
 
 export function createReleaseExactVerificationTool(
@@ -273,6 +324,7 @@ export function createReleaseExactVerificationTool(
   const sessionStore = options.sessionStore;
   const cleanupJournal = options.cleanupJournal;
   const auditLedger = options.auditLedger;
+  const evidenceSink = options.evidenceSink;
   const clock = options.now ?? (() => new Date());
   if (!summaryGateway || typeof summaryGateway.listReleaseSummaries !== "function") {
     throw new ReleaseError("INVALID_ARGUMENT", "Release summary gateway is invalid.");
@@ -291,6 +343,9 @@ export function createReleaseExactVerificationTool(
   if (!auditLedger || typeof auditLedger.append !== "function") {
     throw new ReleaseError("INVALID_ARGUMENT", "Release verification audit ledger is invalid.");
   }
+  if (evidenceSink !== undefined && (!evidenceSink || typeof evidenceSink.record !== "function")) {
+    throw new ReleaseError("INVALID_ARGUMENT", "Release verification evidence sink is invalid.");
+  }
   if (
     !cleanupJournal ||
     typeof cleanupJournal.record !== "function" ||
@@ -299,9 +354,9 @@ export function createReleaseExactVerificationTool(
     throw new ReleaseError("INVALID_ARGUMENT", "Release verification cleanup journal is invalid.");
   }
 
-  const approval = createReleaseVerificationApprovalBinding(intent);
+  const approval = createReleaseStateVerificationApprovalBinding(intent);
   const description =
-    "DESTRUCTIVE exact post-commit read-back verification. First reads the direct deployed-release summary; only when it observes the expected release does it create one temporary Google Play edit, read the exact TrackRelease state, and delete that temporary edit once. Creating the temporary edit may invalidate another active edit owned by this API user. It never commits, uploads, updates, patches, creates a track, or replies to reviews. Exact status, rollout fraction, and trusted release notes are checked; serving/device propagation is not claimed.";
+    "DESTRUCTIVE exact post-commit read-back verification of the committed release state. First reads the direct deployed-release summary; only when it observes the expected release does it create one temporary Google Play edit, read the exact Track state, and delete that temporary edit once. Creating the temporary edit may invalidate another active edit owned by this API user. It never commits, uploads, updates, patches, creates a track, or replies to reviews. Success requires the observed track to canonicalize to the approved durable commit-state digest; serving/device propagation is not claimed.";
 
   const tool: ToolDefinition<Record<string, never>, ExactReleaseVerificationResult> = {
     name: RELEASES_VERIFY_COMMITTED_RELEASE_TOOL_NAME,
@@ -312,11 +367,29 @@ export function createReleaseExactVerificationTool(
     async execute(input) {
       inputSchema.parse(input);
       let summary: DirectReleaseSummaryEvidence | undefined;
-      let temporaryEdit: ReturnType<typeof parseGooglePlayEditSession> | undefined;
+      let temporaryEdit: ReturnType<typeof validateTemporaryEdit> | undefined;
       let cleanupAttempted = false;
+      let temporaryEditCleanupSucceeded = false;
+      let journalRemovalAttempted = false;
+      let verificationCleanupVerified = false;
+      let committedStateObserved = false;
+      const recordEvidence = async (event: ReleaseVerificationEvidenceEvent): Promise<void> => {
+        if (evidenceSink === undefined) return;
+        try {
+          await evidenceSink.record(Object.freeze(event));
+        } catch (cause) {
+          throw new ReleaseVerificationEvidencePersistenceError(event.type, {
+            cause,
+            committedStateObserved,
+            temporaryEditCleanupSucceeded,
+            verificationCleanupVerified,
+            externalStateUncertain: temporaryEdit !== undefined && !temporaryEditCleanupSucceeded,
+          });
+        }
+      };
       try {
         // Layer A is mandatory and always precedes any destructive operation.
-        summary = await inspectDirectReleaseSummary(summaryGateway, intent);
+        summary = await inspectDirectReleaseSummaryForIdentity(summaryGateway, intent);
 
         const localSession = await sessionStore.load();
         if (localSession !== undefined) {
@@ -328,6 +401,8 @@ export function createReleaseExactVerificationTool(
         }
 
         const nowSeconds = epochSecondsFromDate(clock);
+        // The awaited attempt evidence must precede destructive insert transport.
+        await recordEvidence({ type: "verification_insert_attempted" });
         let created: unknown;
         try {
           created = await temporaryEditGateway.createEdit();
@@ -345,7 +420,7 @@ export function createReleaseExactVerificationTool(
         try {
           await cleanupJournal.record({
             editId: temporaryEdit.editId,
-            expiryTimeSeconds: temporaryEdit.expiryTimeSeconds ?? "",
+            expiryTimeSeconds: temporaryEdit.expiryTimeSeconds,
             source: "exact_release_verification",
             createdAt: clock().toISOString(),
           });
@@ -355,6 +430,7 @@ export function createReleaseExactVerificationTool(
           cleanupAttempted = true;
           try {
             await temporaryEditGateway.deleteEdit(temporaryEdit);
+            temporaryEditCleanupSucceeded = true;
           } catch (deleteCause) {
             throw new ReleaseError(
               "VERIFICATION_JOURNAL_WRITE_FAILED",
@@ -369,6 +445,12 @@ export function createReleaseExactVerificationTool(
           );
         }
 
+        await recordEvidence({
+          type: "verification_edit_identified",
+          editId: temporaryEdit.editId,
+          expiryTimeSeconds: temporaryEdit.expiryTimeSeconds,
+        });
+
         let track;
         try {
           track = await temporaryEditGateway.getTrack(temporaryEdit, intent.targetTrack);
@@ -379,11 +461,44 @@ export function createReleaseExactVerificationTool(
             { cause, externalStateUncertain: false },
           );
         }
-        const exact = verifyExactTrackState(track, intent);
+        // Stage 3E.1 decisive proof: the observed committed track state must
+        // canonicalize to the durable expected commit-state digest. There is no
+        // alternate equality path, no field-level fallback, and a track that
+        // cannot be canonicalized fails closed rather than degrading.
+        let observedStateDigest: string;
+        try {
+          observedStateDigest = createReleaseCommitStateDigest(track);
+        } catch (cause) {
+          throw new ReleaseError(
+            "VERIFICATION_STATE_MISMATCH",
+            "The observed temporary-edit track state cannot be canonicalized into the durable commit-state domain.",
+            { cause, externalStateUncertain: false },
+          );
+        }
+        if (observedStateDigest !== intent.expectedStateDigest) {
+          throw new ReleaseError(
+            "VERIFICATION_STATE_MISMATCH",
+            "The observed committed track state differs from the approved expected committed state.",
+            { externalStateUncertain: false },
+          );
+        }
+        const observed = observedRelease(track, intent.versionCode);
+        committedStateObserved = true;
+
+        if (evidenceSink !== undefined) {
+          await recordEvidence({
+            type: "verification_state_observed",
+            observedStateDigest,
+            observedAtUtc: clock().toISOString(),
+          });
+        }
+        await recordEvidence({ type: "verification_pre_delete_read_verified" });
+        await recordEvidence({ type: "verification_delete_attempted" });
 
         cleanupAttempted = true;
         try {
           await temporaryEditGateway.deleteEdit(temporaryEdit);
+          temporaryEditCleanupSucceeded = true;
         } catch (cause) {
           throw new ReleaseError(
             "VERIFICATION_EDIT_CLEANUP_FAILED",
@@ -391,8 +506,11 @@ export function createReleaseExactVerificationTool(
             { cause, externalStateUncertain: true },
           );
         }
+        await recordEvidence({ type: "verification_delete_acknowledged" });
+        journalRemovalAttempted = true;
         try {
           await cleanupJournal.remove(temporaryEdit.editId);
+          verificationCleanupVerified = true;
         } catch (cause) {
           throw new ReleaseError(
             "VERIFICATION_JOURNAL_REMOVE_FAILED",
@@ -401,21 +519,23 @@ export function createReleaseExactVerificationTool(
           );
         }
 
+        await recordEvidence({ type: "verification_cleanup_verified" });
+
         const result: ExactReleaseVerificationResult = Object.freeze({
           targetTrack: intent.targetTrack,
           versionCode: intent.versionCode,
           releaseName: intent.expectedReleaseName,
-          status: exact.release.status,
-          ...(exact.release.userFraction !== undefined
-            ? { userFraction: exact.release.userFraction }
-            : {}),
+          status: observed.status,
+          ...(observed.userFraction !== undefined ? { userFraction: observed.userFraction } : {}),
           releaseLifecycleState: summary.releaseLifecycleState,
           releaseObserved: true,
           exactTrackStateVerified: true,
           liveReleaseVerified: true,
           servingPropagationVerified: false,
+          observedStateDigest,
           temporaryEditCleanupSucceeded: true,
-          verificationRequestDigest: createReleaseVerificationRequestDigest(intent),
+          verificationCleanupVerified: true,
+          verificationRequestDigest: createReleaseStateVerificationRequestDigest(intent),
         });
         try {
           await appendAudit(auditLedger, "success", clock, {
@@ -429,8 +549,10 @@ export function createReleaseExactVerificationTool(
             exactTrackStateVerified: true,
             liveReleaseVerified: true,
             servingPropagationVerified: false,
+            observedStateDigest: result.observedStateDigest,
             temporaryEditCreated: true,
             temporaryEditCleanupSucceeded: true,
+            verificationCleanupVerified: true,
             cleanupAttempted,
           });
         } catch (cause) {
@@ -438,53 +560,78 @@ export function createReleaseExactVerificationTool(
         }
         return result;
       } catch (cause) {
-        const mapped = mapFailure(cause);
+        let mapped = mapFailure(cause);
         // A trustworthy temporary edit is deleted exactly once after every
         // deterministic deep-read failure. Never guess an id after ambiguity.
         if (temporaryEdit !== undefined && !cleanupAttempted) {
           cleanupAttempted = true;
           try {
             await temporaryEditGateway.deleteEdit(temporaryEdit);
+            temporaryEditCleanupSucceeded = true;
           } catch (cleanupCause) {
-            const cleanupFailure = new ReleaseError(
-              "VERIFICATION_EDIT_CLEANUP_FAILED",
-              "Temporary verification edit cleanup failed; external state may be uncertain.",
-              { cause: cleanupCause, externalStateUncertain: true },
-            );
-            try {
-              await appendAudit(auditLedger, "failure", clock, {
-                targetTrack: intent.targetTrack,
-                versionCode: intent.versionCode,
-                releaseObserved: summary !== undefined,
-                exactTrackStateVerified: false,
-                errorCode: cleanupFailure.code,
-                externalStateUncertain: true,
-                temporaryEditCreated: true,
-                temporaryEditCleanupSucceeded: false,
-                cleanupAttempted: true,
-              });
-            } catch (auditCause) {
-              throw auditFailure(auditCause);
+            // Preserve LOCAL evidence failure as the primary classification;
+            // the final snapshot separately exposes an uncertain exact delete.
+            if (!(mapped instanceof ReleaseVerificationEvidencePersistenceError)) {
+              mapped = new ReleaseError(
+                "VERIFICATION_EDIT_CLEANUP_FAILED",
+                "Temporary verification edit cleanup failed; external state may be uncertain.",
+                { cause: cleanupCause, externalStateUncertain: true },
+              );
             }
-            throw cleanupFailure;
           }
+        }
+        if (
+          temporaryEdit !== undefined &&
+          temporaryEditCleanupSucceeded &&
+          !journalRemovalAttempted
+        ) {
           // The remote edit is gone; a stale journal record is safe (hygiene
-          // inspection is report-only) and never masks the primary failure code.
-          await cleanupJournal.remove(temporaryEdit.editId).catch(() => undefined);
+          // inspection is report-only). Never mask the primary failure, but keep
+          // truthful cleanup proof if removal fails. This also covers a sink
+          // failure after delete acknowledgement without deleting a second time.
+          await cleanupJournal.remove(temporaryEdit.editId).then(
+            () => {
+              verificationCleanupVerified = true;
+            },
+            () => {
+              verificationCleanupVerified = false;
+            },
+          );
+        }
+        if (mapped instanceof ReleaseVerificationEvidencePersistenceError) {
+          mapped = new ReleaseVerificationEvidencePersistenceError(mapped.failedEvent, {
+            cause: mapped.cause,
+            committedStateObserved,
+            temporaryEditCleanupSucceeded,
+            verificationCleanupVerified,
+            externalStateUncertain: temporaryEdit !== undefined && !temporaryEditCleanupSucceeded,
+          });
         }
         try {
           await appendAudit(auditLedger, "failure", clock, {
             targetTrack: intent.targetTrack,
             versionCode: intent.versionCode,
             releaseObserved: summary !== undefined,
-            exactTrackStateVerified: false,
+            exactTrackStateVerified:
+              mapped instanceof ReleaseVerificationEvidencePersistenceError &&
+              committedStateObserved,
             errorCode: mapped.code,
             externalStateUncertain: mapped.externalStateUncertain === true,
             temporaryEditCreated: temporaryEdit !== undefined,
-            temporaryEditCleanupSucceeded: temporaryEdit === undefined ? false : cleanupAttempted,
+            temporaryEditCleanupSucceeded,
             cleanupAttempted,
           });
         } catch (auditCause) {
+          if (mapped instanceof ReleaseVerificationEvidencePersistenceError) {
+            throw new ReleaseVerificationEvidencePersistenceError(mapped.failedEvent, {
+              cause: mapped.cause,
+              committedStateObserved,
+              temporaryEditCleanupSucceeded,
+              verificationCleanupVerified,
+              externalStateUncertain: mapped.externalStateUncertain === true,
+              auditPersistenceFailed: true,
+            });
+          }
           throw auditFailure(auditCause);
         }
         throw mapped;
@@ -497,16 +644,14 @@ export function createReleaseExactVerificationTool(
           result.targetTrack === intent.targetTrack &&
           result.versionCode === intent.versionCode &&
           result.releaseName === intent.expectedReleaseName &&
-          result.status === intent.expectedStatus &&
-          (intent.expectedUserFraction === undefined
-            ? result.userFraction === undefined
-            : result.userFraction === intent.expectedUserFraction) &&
+          result.observedStateDigest === intent.expectedStateDigest &&
           result.releaseObserved === true &&
           result.exactTrackStateVerified === true &&
           result.liveReleaseVerified === true &&
           result.servingPropagationVerified === false &&
           result.temporaryEditCleanupSucceeded === true &&
-          result.verificationRequestDigest === createReleaseVerificationRequestDigest(intent)
+          result.verificationCleanupVerified === true &&
+          result.verificationRequestDigest === createReleaseStateVerificationRequestDigest(intent)
         );
       } catch {
         return false;
@@ -547,6 +692,8 @@ export function createReleaseExactVerificationTool(
         exactTrackStateVerified: result.exactTrackStateVerified,
         liveReleaseVerified: result.liveReleaseVerified,
         servingPropagationVerified: result.servingPropagationVerified,
+        observedStateDigest: result.observedStateDigest,
+        verificationCleanupVerified: result.verificationCleanupVerified,
       });
     },
   };

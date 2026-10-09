@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -38,6 +38,7 @@ import { ToolRegistry } from "../src/runtime/tools/index.js";
 import * as releaseGateway from "../src/releases/androidpublisher.js";
 import * as releaseSessionStore from "../src/releases/session-store.js";
 import * as agentRuntime from "../src/runtime/agent/index.js";
+import type { ReleaseVerificationEvidenceEvent } from "../src/releases/verification-evidence.js";
 
 let tempDir: string | undefined;
 afterEach(() => {
@@ -131,6 +132,87 @@ function gateConfig(): PlayOpsConfig {
 }
 
 describe("release composition root", () => {
+  it("passes the trusted optional verification evidence sink without writing a commit journal or exposing it as tool input", async () => {
+    const config = gateConfig();
+    const fixedNow = new Date("2026-10-08T05:00:00.000Z");
+    const events: ReleaseVerificationEvidenceEvent[] = [];
+    const sink = {
+      record: vi.fn(async (event: ReleaseVerificationEvidenceEvent) => {
+        events.push(event);
+      }),
+    };
+    const fake = {
+      ...publisher,
+      applications: {
+        tracks: {
+          releases: {
+            list: vi.fn(async () => ({
+              data: {
+                releases: [
+                  {
+                    releaseName: commitIntent.releaseName,
+                    track: commitIntent.targetTrack,
+                    releaseLifecycleState: "RELEASE_LIFECYCLE_STATE_PUBLISHED",
+                    activeArtifacts: [{ versionCode: 42 }],
+                  },
+                ],
+              },
+            })),
+          },
+        },
+      },
+      edits: {
+        insert: vi.fn(async () => ({
+          data: { id: "composition-temp-3e2a", expiryTimeSeconds: "4102444800" },
+        })),
+        delete: vi.fn(async () => ({ data: {} })),
+        tracks: { get: vi.fn(async () => ({ data: rolloutInput.currentTrackState })) },
+      },
+    };
+    const composition = createReleaseComposition(
+      config,
+      { publisher: fake as unknown as AndroidPublisherClient, now: () => fixedNow },
+      {
+        verifyCommittedRelease: {
+          targetTrack: commitIntent.targetTrack,
+          versionCode: commitIntent.versionCode,
+          expectedReleaseName: commitIntent.releaseName,
+          expectedStateDigest: commitIntent.stateDigest,
+        },
+        verificationEvidenceSink: sink,
+      },
+    );
+    const result = await composition.verifyCommittedReleaseTool?.execute({}, {});
+    expect(events.map((event) => event.type)).toEqual([
+      "verification_insert_attempted",
+      "verification_edit_identified",
+      "verification_state_observed",
+      "verification_pre_delete_read_verified",
+      "verification_delete_attempted",
+      "verification_delete_acknowledged",
+      "verification_cleanup_verified",
+    ]);
+    expect(events[1]).toEqual({
+      type: "verification_edit_identified",
+      editId: "composition-temp-3e2a",
+      expiryTimeSeconds: "4102444800",
+    });
+    expect(events[2]).toEqual({
+      type: "verification_state_observed",
+      observedStateDigest: commitIntent.stateDigest,
+      observedAtUtc: fixedNow.toISOString(),
+    });
+    expect(result?.verificationCleanupVerified).toBe(true);
+    expect(fake.edits.insert).toHaveBeenCalledTimes(1);
+    expect(fake.edits.delete).toHaveBeenCalledTimes(1);
+    expect(composition.verifyCommittedReleaseBinding?.llm.inputSchema).toEqual({
+      type: "object",
+      properties: {},
+      additionalProperties: false,
+    });
+    expect(existsSync(config.release.commitAttemptJournalPath ?? "")).toBe(false);
+  });
+
   it("loads credentials, auth, and the existing Publisher client exactly once", async () => {
     tempDir = mkdtempSync(
       join(process.env.TMPDIR ?? process.cwd(), "playops-release-composition-"),
@@ -347,7 +429,15 @@ describe("release composition root", () => {
         release: { editSessionPath: base.release.editSessionPath, editCleanupJournalPath: "" },
       };
       // A second journal-backed request must not replace the maturity error.
-      const requested = { ...options, verifyCommittedRelease: { intent: commitIntent } };
+      const requested = {
+        ...options,
+        verifyCommittedRelease: {
+          targetTrack: commitIntent.targetTrack,
+          versionCode: commitIntent.versionCode,
+          expectedReleaseName: commitIntent.releaseName,
+          expectedStateDigest: commitIntent.stateDigest,
+        },
+      };
       expect(() => createReleaseComposition(config, { publisher }, requested)).toThrow(
         expect.objectContaining({ code: "RELEASE_CAPABILITY_NOT_HARDENED", toolName }),
       );
@@ -545,7 +635,12 @@ describe("release composition root", () => {
         },
         commitEdit: { intent: commitIntent },
         inspectCommittedRelease: { intent: commitIntent },
-        verifyCommittedRelease: { intent: commitIntent },
+        verifyCommittedRelease: {
+          targetTrack: commitIntent.targetTrack,
+          versionCode: commitIntent.versionCode,
+          expectedReleaseName: commitIntent.releaseName,
+          expectedStateDigest: commitIntent.stateDigest,
+        },
         cleanupKnownEdit: {
           candidate: {
             recordSource: "managed_session",
@@ -579,7 +674,12 @@ describe("release composition root", () => {
         noJournal,
         { publisher },
         {
-          verifyCommittedRelease: { intent: commitIntent },
+          verifyCommittedRelease: {
+            targetTrack: commitIntent.targetTrack,
+            versionCode: commitIntent.versionCode,
+            expectedReleaseName: commitIntent.releaseName,
+            expectedStateDigest: commitIntent.stateDigest,
+          },
         },
       ),
     ).toThrow(expect.objectContaining({ name: "ReleaseCompositionError", code: "CONFIG_INVALID" }));

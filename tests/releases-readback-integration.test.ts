@@ -22,6 +22,11 @@ import { createReleaseComposition, type ReleaseComposition } from "../src/releas
 import type { ReleaseState, ReleaseTrackState } from "../src/releases/index.js";
 import { RELEASES_INSPECT_COMMITTED_RELEASE_TOOL_NAME } from "../src/releases/inspect-committed-release-tool.js";
 import { RELEASES_VERIFY_COMMITTED_RELEASE_TOOL_NAME } from "../src/releases/verify-committed-release-tool.js";
+import type {
+  ReleaseVerificationEvidenceEvent,
+  ReleaseVerificationEvidenceSink,
+} from "../src/releases/verification-evidence.js";
+import { toOperatorError } from "../src/errors/index.js";
 
 const packageName = "com.example.release";
 const targetTrack = "wear:production";
@@ -30,6 +35,15 @@ const releaseName = "Candidate 101";
 const expiryTimeSeconds = "4102444800";
 const noteText = "PRIVATE-NOTE-TEXT-PHASE411-INTEGRATION";
 const fixedNow = new Date("2026-09-30T05:00:00.000Z");
+const evidenceEventTypes = [
+  "verification_insert_attempted",
+  "verification_edit_identified",
+  "verification_state_observed",
+  "verification_pre_delete_read_verified",
+  "verification_delete_attempted",
+  "verification_delete_acknowledged",
+  "verification_cleanup_verified",
+] as const;
 let tempDirs: string[] = [];
 
 afterEach(() => {
@@ -84,6 +98,16 @@ function makeIntent(state = targetTrackState()): ReleaseCommitIntent {
   });
 }
 
+/** Stage 3E.1 durable verification evidence derived from the same commit intent. */
+function verifyEvidence(intent: ReleaseCommitIntent) {
+  return {
+    targetTrack: intent.targetTrack,
+    versionCode: intent.versionCode,
+    expectedReleaseName: intent.releaseName,
+    expectedStateDigest: intent.stateDigest,
+  };
+}
+
 interface FakeOptions {
   readonly summaryRelease?: {
     readonly releaseName?: string;
@@ -94,10 +118,11 @@ interface FakeOptions {
   readonly track?: ReleaseTrackState;
   readonly insertError?: unknown;
   readonly deleteError?: unknown;
+  readonly temporaryEditId?: string;
 }
 
-function fakePublisher(options: FakeOptions = {}) {
-  const events: string[] = [];
+function fakePublisher(options: FakeOptions = {}, events: string[] = []) {
+  const temporaryEditId = options.temporaryEditId ?? "temporary-readback-edit";
   const calls = {
     summaryList: 0,
     insert: 0,
@@ -139,10 +164,10 @@ function fakePublisher(options: FakeOptions = {}) {
         calls.insert += 1;
         events.push("edits.insert");
         if (options.insertError !== undefined) throw options.insertError;
-        return { data: { id: "temporary-readback-edit", expiryTimeSeconds } };
+        return { data: { id: temporaryEditId, expiryTimeSeconds } };
       },
       delete: async (params: unknown, requestOptions: unknown) => {
-        expect(params).toEqual({ packageName, editId: "temporary-readback-edit" });
+        expect(params).toEqual({ packageName, editId: temporaryEditId });
         expect(requestOptions).toEqual({ retry: false });
         calls.delete += 1;
         events.push("edits.delete");
@@ -160,7 +185,7 @@ function fakePublisher(options: FakeOptions = {}) {
         get: async (params: unknown, requestOptions: unknown) => {
           expect(params).toEqual({
             packageName,
-            editId: "temporary-readback-edit",
+            editId: temporaryEditId,
             track: targetTrack,
           });
           expect(requestOptions).toEqual({ retry: false });
@@ -217,6 +242,8 @@ async function runTool(options: {
   readonly toolName: string;
   readonly intent?: ReleaseCommitIntent;
   readonly fake?: FakeOptions;
+  readonly evidenceSink?: ReleaseVerificationEvidenceSink;
+  readonly timeline?: string[];
   readonly resolver?: (
     request: ApprovalRequest,
     composition: ReleaseComposition,
@@ -228,13 +255,18 @@ async function runTool(options: {
   readonly dir: string;
 }> {
   const dir = makeDir();
-  const fake = fakePublisher(options.fake);
+  const fake = fakePublisher(options.fake, options.timeline);
   const composition = createReleaseComposition(
     configFor(dir),
     { publisher: fake.publisher, now: () => new Date(fixedNow) },
     options.toolName === RELEASES_INSPECT_COMMITTED_RELEASE_TOOL_NAME
       ? { inspectCommittedRelease: { intent: options.intent ?? makeIntent() } }
-      : { verifyCommittedRelease: { intent: options.intent ?? makeIntent() } },
+      : {
+          verifyCommittedRelease: verifyEvidence(options.intent ?? makeIntent()),
+          ...(options.evidenceSink !== undefined
+            ? { verificationEvidenceSink: options.evidenceSink }
+            : {}),
+        },
   );
   const selectedBinding =
     options.toolName === RELEASES_INSPECT_COMMITTED_RELEASE_TOOL_NAME
@@ -266,6 +298,152 @@ async function runTool(options: {
 }
 
 describe("Phase 4.11 through the real Phase 2 runtime", () => {
+  it("awaits trusted internal evidence around real Publisher adapter calls while keeping all public surfaces private", async () => {
+    const timeline: string[] = [];
+    const events: ReleaseVerificationEvidenceEvent[] = [];
+    const temporaryEditId = "INTERNAL-3E2A-PUBLISHER-TEMP-IDENTITY-NEVER-PUBLIC";
+    const sink: ReleaseVerificationEvidenceSink = {
+      async record(event) {
+        events.push(event);
+        await Promise.resolve();
+        timeline.push(`evidence:${event.type}`);
+      },
+    };
+    const run = await runTool({
+      toolName: RELEASES_VERIFY_COMMITTED_RELEASE_TOOL_NAME,
+      resolver: exactApproval,
+      fake: { temporaryEditId },
+      evidenceSink: sink,
+      timeline,
+    });
+    expect(run.result).toMatchObject({
+      ok: true,
+      code: "COMPLETED",
+      externalStateUncertain: false,
+    });
+    expect(events.map((event) => event.type)).toEqual(evidenceEventTypes);
+    expect(events[1]).toEqual({
+      type: "verification_edit_identified",
+      editId: temporaryEditId,
+      expiryTimeSeconds,
+    });
+    expect(events[2]).toEqual({
+      type: "verification_state_observed",
+      observedStateDigest: makeIntent().stateDigest,
+      observedAtUtc: fixedNow.toISOString(),
+    });
+    expect(timeline).toEqual([
+      "applications.tracks.releases.list",
+      "evidence:verification_insert_attempted",
+      "edits.insert",
+      "evidence:verification_edit_identified",
+      "edits.tracks.get",
+      "evidence:verification_state_observed",
+      "evidence:verification_pre_delete_read_verified",
+      "evidence:verification_delete_attempted",
+      "edits.delete",
+      "evidence:verification_delete_acknowledged",
+      "evidence:verification_cleanup_verified",
+    ]);
+    expect(run.fake.calls).toEqual({
+      summaryList: 1,
+      insert: 1,
+      trackGet: 1,
+      delete: 1,
+      commit: 0,
+      upload: 0,
+      trackUpdate: 0,
+    });
+    const binding = run.composition.verifyCommittedReleaseBinding;
+    const approval = binding?.approval;
+    if (!approval) throw new Error("Verification approval unavailable");
+    const request = {
+      toolName: RELEASES_VERIFY_COMMITTED_RELEASE_TOOL_NAME,
+      permission: "destructive" as const,
+      requestId: "privacy-challenge-3e2a",
+      requestDigest: approval.createRequestDigest({}),
+      safeSummary: approval.createSafeSummary({}),
+      createdAt: fixedNow.toISOString(),
+      expiresAt: "2026-09-30T05:10:00.000Z",
+    };
+    const challenge = createApprovalChallenge(request, {
+      ledger: run.composition.ledger,
+      now: () => fixedNow,
+    });
+    const audit = readAuditEntries(join(run.dir, "audit.jsonl"));
+    const toolMessage = run.result.conversation.find((message) => message.role === "tool");
+    expect(JSON.parse(toolMessage?.content ?? "null")).toMatchObject({
+      observedStateDigest: makeIntent().stateDigest,
+      verificationCleanupVerified: true,
+    });
+    for (const safe of [
+      toolMessage?.content ?? "",
+      JSON.stringify(run.result.conversation),
+      JSON.stringify(audit),
+      request.safeSummary,
+      JSON.stringify(request),
+      JSON.stringify(challenge),
+      JSON.stringify(binding?.llm),
+    ]) {
+      expect(safe).not.toContain(temporaryEditId);
+      expect(safe).not.toContain(expiryTimeSeconds);
+    }
+  });
+
+  it.each(evidenceEventTypes)(
+    "returns runtime failure for sink rejection at %s without retry or release mutations",
+    async (failAt) => {
+      const events: ReleaseVerificationEvidenceEvent[] = [];
+      const temporaryEditId = "INTERNAL-3E2A-FAILURE-TEMP-IDENTITY-NEVER-PUBLIC";
+      const run = await runTool({
+        toolName: RELEASES_VERIFY_COMMITTED_RELEASE_TOOL_NAME,
+        resolver: exactApproval,
+        fake: { temporaryEditId },
+        evidenceSink: {
+          async record(event) {
+            events.push(event);
+            if (event.type === failAt)
+              throw new Error(`Local persistence unavailable: ${temporaryEditId}`);
+          },
+        },
+      });
+      const position = evidenceEventTypes.indexOf(failAt);
+      expect(run.result).toMatchObject({
+        ok: false,
+        code: "EXECUTION_FAILED",
+        externalStateUncertain: false,
+      });
+      expect(run.result.cause).toMatchObject({
+        code: "VERIFICATION_EVIDENCE_PERSISTENCE_FAILED",
+        committedStateObserved: position >= 2,
+        temporaryEditCleanupSucceeded: position > 0,
+        verificationCleanupVerified: position > 0,
+      });
+      expect(events.map((event) => event.type)).toEqual(evidenceEventTypes.slice(0, position + 1));
+      expect(new Set(events.map((event) => event.type)).size).toBe(events.length);
+      expect(run.fake.calls).toEqual({
+        summaryList: 1,
+        insert: position === 0 ? 0 : 1,
+        trackGet: position < 2 ? 0 : 1,
+        delete: position === 0 ? 0 : 1,
+        commit: 0,
+        upload: 0,
+        trackUpdate: 0,
+      });
+      const audit = readAuditEntries(join(run.dir, "audit.jsonl"));
+      for (const safe of [
+        JSON.stringify(run.result.conversation),
+        JSON.stringify(audit),
+        JSON.stringify(toOperatorError(run.result.cause)),
+        run.composition.verifyCommittedReleaseBinding?.approval?.createSafeSummary({}) ?? "",
+        (run.result.cause as Error).message,
+      ]) {
+        expect(safe).not.toContain(temporaryEditId);
+        expect(safe).not.toContain(expiryTimeSeconds);
+      }
+    },
+  );
+
   it("registers Layer A as read without approval and observes the direct endpoint", async () => {
     const run = await runTool({ toolName: RELEASES_INSPECT_COMMITTED_RELEASE_TOOL_NAME });
     expect(run.composition.inspectCommittedReleaseTool?.permission).toBe("read");

@@ -13,6 +13,28 @@ the repository maintainers.
 
 No unreleased changes yet.
 
+## [0.3.0] - 2026-10-09
+
+### Added
+
+- Daemon core protocol and orchestration for status, opening edits, attaching notes, committing, verifying committed releases, and reconciling uncertain commit outcomes. Preparation and execution are separate, with server-owned operation candidates.
+- Signed operator approvals for destructive/publish operations, bound to the exact pending request and current operation state. Durable pending records and request claims preserve single-use approval and conservative crash/restart recovery.
+- Shared, package-wide execution coordination across edit, notes, commit, verification, and reconciliation operations within one daemon composition.
+- Committed-release verification against the exact expected track-state digest, with durable verification evidence that can resume after a crash without blindly repeating the verification lifecycle.
+- Local finalization of a verified commit from authoritative persisted evidence, without another Google request. Incomplete or conflicting local state fails closed.
+- Signed reconciliation recovery for uncertain and legitimate crash-intermediate commit states. Recovery preserves the existing production reconciliation authority, never retries commit automatically, and keeps unresolved cleanup or consumption uncertainty explicit.
+
+### Changed
+
+- Clean producer builds now remove only the guarded repository-owned `dist` output before compilation, preventing deleted or renamed runtime modules from surviving into an ordinary package.
+- Expanded installed-tarball runtime smoke coverage and package reproducibility checks; release preparation documentation derives version/tag identity from the actual manifest.
+
+### Known limitations
+
+- This is the core/runtime release candidate, not a deployed production operator path. No production daemon bootstrap, operator socket client, service launch mechanism, or deployed credential privilege boundary is provided.
+- Production deployment and R6A remain blocked. These capabilities have fake-service/offline acceptance, not live Google mutation validation; existing live-blocked rollout capabilities remain blocked.
+- Package-wide coordination does not establish a single-daemon deployment or cross-process locking.
+
 ## [0.2.0] - 2026-10-05
 
 ### Added

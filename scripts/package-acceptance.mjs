@@ -572,6 +572,10 @@ try {
     }
   }
 
+  check(
+    "installed local finalization and offline runtime observed zero network calls",
+    traceLines(trace).length === 0,
+  );
   renameSync(detached, source);
 
   const evidence = {
@@ -648,9 +652,15 @@ function installedChecksSource() {
     'const agent = await import("playops/dist/runtime/agent/index.js");',
     'const permissions = await import("playops/dist/runtime/permissions/index.js");',
     'const logging = await import("playops/dist/logging/index.js");',
+    'const commitAttempts = await import("playops/dist/releases/commit-attempt-journal.js");',
+    'const commitEvidence = await import("playops/dist/releases/commit-verification-evidence.js");',
+    'const commitFinalization = await import("playops/dist/releases/finalize-verified-commit.js");',
+    'const commitStatus = await import("playops/dist/releases/commit-attempt-status.js");',
+    'const packageOperations = await import("playops/dist/daemon/package-operation-singleflight.js");',
     "",
   ];
   const body = [
+    ...v03InstalledImportChecksSource(),
     'await record("diagnostic records redact secrets using only installed runtime modules", () => {',
     "  const lines = [];",
     '  const marker = "FAKE-PACKAGE-LOG-SECRET";',
@@ -776,6 +786,7 @@ function installedChecksSource() {
     '    cli.includes("isInteractive ? { approvalPrompt")',
     "  );",
     "});",
+    ...localFinalizationChecksSource(),
     'await record("installed checks wrote nothing inside the package directory", () =>',
     "  JSON.stringify(before) === JSON.stringify(listing(pkgDir)),",
     ");",
@@ -785,4 +796,135 @@ function installedChecksSource() {
     "",
   ];
   return [...header, ...body].join("\n");
+}
+
+/** Stage 3F.5 import/smoke coverage, always inside the offline installed consumer. */
+function v03InstalledImportChecksSource() {
+  return [
+    `
+await record("v0.3 daemon operation and socket modules import from the installed tarball", async () => {
+  const operations = await import("playops/dist/daemon/operations.js");
+  const server = await import("playops/dist/daemon/server.js");
+  const attach = await import("playops/dist/daemon/attach-notes.js");
+  const commit = await import("playops/dist/daemon/commit-operations.js");
+  const verify = await import("playops/dist/daemon/verify-committed-operations.js");
+  const reconcile = await import("playops/dist/daemon/reconcile-commit-operations.js");
+  return [operations.createDaemonOperations, server.createDaemonServer, attach.attachNotes,
+    commit.prepareCommit, commit.executeCommit, verify.prepareVerifyCommitted,
+    verify.executeVerifyCommitted, reconcile.prepareReconcileCommit,
+    reconcile.executeReconcileCommit].every((entry) => typeof entry === "function");
+});
+await record("v0.3 approval, signature and durable authority modules import from the installed tarball", async () => {
+  const resolver = await import("playops/dist/daemon/approval-resolver.js");
+  const signature = await import("playops/dist/runtime/approvals/operator-signature.js");
+  const pending = await import("playops/dist/daemon/pending-store.js");
+  const view = await import("playops/dist/daemon/pending-view.js");
+  const claims = await import("playops/dist/daemon/request-claim.js");
+  const writeIntent = await import("playops/dist/releases/release-write-intent-store.js");
+  const execution = await import("playops/dist/runtime/agent/execute-one-tool.js");
+  // Availability only: never load the real pinned key or construct a live gateway.
+  return [resolver.createOperatorSignatureApprovalResolver, signature.createOperatorApprovalVerifier,
+    signature.createProductionOperatorVerifier, pending.createFilePendingOperationStore,
+    view.approvalPayloadFor, view.approvalChallengeFor, claims.acquireRequestClaim,
+    claims.releaseRequestClaim, writeIntent.createFileReleaseWriteIntentStore,
+    execution.executeOneTool].every((entry) => typeof entry === "function");
+});
+await record("installed daemon protocol and served operation map retain the frozen contracts", async () => {
+  const protocol = await import("playops/dist/daemon/protocol.js");
+  const operations = await import("playops/dist/daemon/operations.js");
+  const pending = await import("playops/dist/daemon/pending-store.js");
+  const claims = await import("playops/dist/daemon/request-claim.js");
+  const signature = await import("playops/dist/runtime/approvals/operator-signature.js");
+  const writeIntent = await import("playops/dist/releases/release-write-intent-store.js");
+  const reconcile = await import("playops/dist/daemon/reconcile-commit-operations.js");
+  const request = protocol.parseDaemonRequest({ protocolVersion: 4, correlationId: "installed_package_smoke", request: { kind: "status" } });
+  const expected = ["status", "prepare_open_edit", "execute_open_edit", "attach_notes",
+    "prepare_commit", "execute_commit", "prepare_verify_committed", "execute_verify_committed",
+    "prepare_reconcile_commit", "execute_reconcile_commit"];
+  return protocol.PLAYOPS_DAEMON_PROTOCOL_VERSION === 4 && request.request.kind === "status" &&
+    JSON.stringify(operations.DAEMON_SERVED_OPERATIONS) === JSON.stringify(expected) &&
+    pending.PENDING_RECORD_SCHEMA_VERSION === 2 && claims.REQUEST_CLAIM_SCHEMA_VERSION === 1 &&
+    signature.OPERATOR_APPROVAL_PROTOCOL_VERSION === 1 && writeIntent.RELEASE_WRITE_INTENT_SCHEMA_VERSION === 1 &&
+    reconcile.DAEMON_RECONCILIATION_MODE === "verify_expired";
+});
+`,
+  ];
+}
+
+/** Stage 3F.1 exercises real installed modules behind the existing network blocker. */
+function localFinalizationChecksSource() {
+  return `
+let localFinalizationFixture;
+await record("complete Stage-3E proof finalizes locally in the installed package and releases the unresolved gate", async () => {
+  const packageName = "com.example.installedfinalization";
+  const at = "2026-10-09T00:00:00.000Z";
+  const finalAt = "2026-10-09T00:00:10.000Z";
+  const expectedStateDigest = "a".repeat(64);
+  const path = join(state, "local-finalization", "private", "attempts.json");
+  const auditPath = join(state, "local-finalization", "audit.jsonl");
+  const attempts = commitAttempts.createFileReleaseCommitAttemptJournal(path, { expectedPackageName: packageName });
+  const input = { version: 1, packageName, editId: "original-installed-edit", expiryTimeSeconds: "4102444800", targetTrack: "internal", versionCode: "101", releaseName: "Installed Candidate", releaseStatus: "completed", expectedStateDigest, validationExpiryTimeSeconds: "4102444800", requestDigest: "c".repeat(64), attemptedAtUtc: at, updatedAtUtc: at };
+  const prepared = await attempts.prepare(input);
+  await attempts.transition(prepared.attemptId, "PREPARED", "TRANSPORT_ATTEMPTED", at);
+  await attempts.transition(prepared.attemptId, "TRANSPORT_ATTEMPTED", "ACKNOWLEDGED", at, { acknowledgedAtUtc: at });
+  const sink = commitEvidence.createCommitVerificationEvidenceJournalSink({ journal: attempts, attemptId: prepared.attemptId, packageName, expectedStateDigest, now: () => new Date(at) });
+  for (const event of [
+    { type: "verification_insert_attempted" },
+    { type: "verification_edit_identified", editId: "PRIVATE-INSTALLED-VERIFICATION-EDIT", expiryTimeSeconds: "4102444900" },
+    { type: "verification_state_observed", observedStateDigest: expectedStateDigest, observedAtUtc: at },
+    { type: "verification_pre_delete_read_verified" },
+    { type: "verification_delete_attempted" },
+    { type: "verification_delete_acknowledged" },
+    { type: "verification_cleanup_verified" },
+  ]) await sink.record(event);
+  const [candidate] = await attempts.list();
+  const sessionStore = sessions.createFileReleaseEditSessionStore(join(state, "local-finalization", "session.json"), { expectedPackageName: packageName });
+  const coordinator = packageOperations.createPackageOperationSingleFlightCoordinator();
+  const options = { journal: attempts, sessionStore, candidate, auditLedger: { async append(entry) { audit.appendAuditEntry(auditPath, entry, { durable: true }); } }, now: () => new Date(finalAt) };
+  const acquisition = coordinator.tryAcquirePackageOperation(packageName);
+  if (!acquisition.acquired) throw new Error("Installed fixture package lease is busy");
+  let result;
+  try { result = await commitFinalization.finalizeVerifiedCommit(options); } finally { coordinator.releasePackageOperation(acquisition.lease); }
+  const [terminal] = await attempts.list();
+  localFinalizationFixture = { packageName, path, auditPath, attempts, candidate, sessionStore, coordinator, options };
+  const retained = Object.entries(candidate).every(([key, value]) => key === "state" || key === "updatedAtUtc" || terminal[key] === value);
+  const closed = result.outcome === "finalized" && terminal.state === "RECONCILED_COMMITTED" && terminal.verificationObservedStateDigest === expectedStateDigest && terminal.verificationCleanupVerified === true && !commitStatus.isCommitAttemptUnresolved(terminal);
+  // Public journal behaviour, not a private predicate assertion: a new attempt
+  // is now permitted, and later checks must still correlate the old exact ID.
+  const next = await attempts.prepare({ ...input, editId: "later-installed-edit", versionCode: "102" });
+  return closed && retained && next.state === "PREPARED" && next.attemptId !== candidate.attemptId;
+});
+await record("installed local finalization is idempotent without another journal or audit write", async () => {
+  const f = localFinalizationFixture;
+  if (!f) throw new Error("Installed finalization fixture did not complete");
+  const bytes = readFileSync(f.path, "utf8");
+  const auditBytes = readFileSync(f.auditPath, "utf8");
+  const acquisition = f.coordinator.tryAcquirePackageOperation(f.packageName);
+  if (!acquisition.acquired) throw new Error("Installed fixture package lease is busy");
+  let result;
+  try { result = await commitFinalization.finalizeVerifiedCommit(f.options); } finally { f.coordinator.releasePackageOperation(acquisition.lease); }
+  return result.outcome === "already_finalized" && readFileSync(f.path, "utf8") === bytes && readFileSync(f.auditPath, "utf8") === auditBytes;
+});
+await record("installed finalization audit includes zero-Google proof without temporary identity", () => {
+  const f = localFinalizationFixture;
+  if (!f) throw new Error("Installed finalization fixture did not complete");
+  const entries = audit.readAuditEntries(f.auditPath);
+  const bytes = readFileSync(f.auditPath, "utf8");
+  return entries.length === 1 && entries[0].metadata.attemptId === f.candidate.attemptId && entries[0].metadata.local_finalization === true && entries[0].metadata.googleCalls === 0 && !bytes.includes("PRIVATE-INSTALLED-VERIFICATION-EDIT") && !bytes.includes("4102444900");
+});
+await record("installed finalizer refuses a later managed session without clearing it", async () => {
+  const f = localFinalizationFixture;
+  if (!f) throw new Error("Installed finalization fixture did not complete");
+  const session = { version: 1, packageName: f.packageName, editId: "later-installed-session", expiryTimeSeconds: "4102445000", createdAt: "2026-10-09T00:00:20.000Z" };
+  await f.sessionStore.save(session);
+  const bytes = readFileSync(f.path, "utf8");
+  const acquisition = f.coordinator.tryAcquirePackageOperation(f.packageName);
+  if (!acquisition.acquired) throw new Error("Installed fixture package lease is busy");
+  let result;
+  try { result = await commitFinalization.finalizeVerifiedCommit(f.options); } finally { f.coordinator.releasePackageOperation(acquisition.lease); }
+  return result.outcome === "refused" && result.code === "MANAGED_EDIT_ALREADY_OPEN" && JSON.stringify(await f.sessionStore.load()) === JSON.stringify(session) && readFileSync(f.path, "utf8") === bytes;
+});
+`
+    .trim()
+    .split("\n");
 }

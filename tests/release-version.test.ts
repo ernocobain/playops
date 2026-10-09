@@ -53,10 +53,15 @@ describe("Phase 6.6 release identity and changelog", () => {
 
   it("documents the annotated-tag contract, tag safety and the release order", () => {
     const process_ = read("docs/release-process.md");
-    expect(process_).toContain('git tag -a v0.1.0 -m "PlayOps v0.1.0"');
+    // The procedure must stay version-generic: it derives the tag from the
+    // prepared manifest instead of pinning one obsolete release line.
+    expect(process_).toContain('git tag -a "v${VERSION}" -m "PlayOps v${VERSION}"');
     expect(process_).toContain("git status --short");
     expect(process_).toContain("git rev-parse HEAD");
-    expect(process_).toContain("git tag --list v0.1.0");
+    expect(process_).toContain('git tag --list "v${VERSION}"');
+    expect(process_).toContain("CURRENT_VERSION");
+    expect(process_).toContain("NEXT_VERSION");
+    expect(process_).not.toMatch(/prepared package version[^\n]*0\.1\.0/u);
     expect(process_).toMatch(/Never use `git tag -f`/u);
     expect(process_).toContain("prepare version + changelog");
     expect(process_).toMatch(/annotated/iu);

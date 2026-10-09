@@ -15,7 +15,6 @@ import {
   isReleaseEditSessionExpired,
   normalizeReleaseBundle,
   normalizeReleaseTracks,
-  normalizeReleaseVersionCode,
   parseReleaseEditSession,
   RELEASE_CONFIGURATION_STATUSES,
   ReleaseError,
@@ -24,7 +23,6 @@ import {
   validateReleaseTargetTrack,
   type LocalizedReleaseNote,
   type ReleaseBundle,
-  type ReleaseCountryTargeting,
   type ReleaseEditSession,
   type ReleaseState,
   type ReleaseTrackReleaseUpdate,
@@ -35,8 +33,24 @@ import type { ReleaseConfigurationGateway } from "./gateway.js";
 import type { ReleaseConfigurationResult } from "./configure-release-tool.js";
 import { loadReleaseEditSessionState, type ReleaseEditSessionStore } from "./session-store.js";
 
+import {
+  canonicalVersionCodeSet,
+  cloneReleaseNotesTrack as cloneTrack,
+  cloneReleaseState as cloneRelease,
+  createExpectedReleaseNotesTrack as replaceReleaseNotes,
+  invalidNotes,
+  normalizeReleaseNotesIntent,
+  sameReleaseNotes as sameNotes,
+  sameReleaseNotesTrackState as sameTrack,
+  sameStringSet,
+} from "./release-notes-canonical.js";
+// Re-exported so this module's public surface is unchanged by the extraction.
+export {
+  normalizeReleaseNotesIntent,
+  RELEASE_NOTE_MAX_UNICODE_CODE_POINTS,
+} from "./release-notes-canonical.js";
+
 export const RELEASES_ATTACH_RELEASE_NOTES_TOOL_NAME = "releases.attach_release_notes";
-export const RELEASE_NOTE_MAX_UNICODE_CODE_POINTS = 500;
 
 export interface ReleaseNotesAttachmentResult {
   readonly targetTrack: string;
@@ -75,10 +89,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function invalidNotes(message = "Localized release notes are invalid."): ReleaseError {
-  return new ReleaseError("INVALID_RELEASE_NOTES", message);
-}
-
 function invalidConfiguration(message = "Configured release identity is invalid."): ReleaseError {
   return new ReleaseError("INVALID_RELEASE_CONFIGURATION", message);
 }
@@ -90,231 +100,6 @@ function safePreMutationError(
 ): ReleaseError {
   return new ReleaseError(code, message, {
     ...(cause !== undefined ? { cause } : {}),
-  });
-}
-
-function hasUnsafeControlCharacters(value: string): boolean {
-  for (const character of value) {
-    const codePoint = character.codePointAt(0) ?? 0;
-    if (
-      (codePoint <= 0x1f && codePoint !== 0x09 && codePoint !== 0x0a && codePoint !== 0x0d) ||
-      codePoint === 0x7f ||
-      (codePoint >= 0x80 && codePoint <= 0x9f)
-    ) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function canonicalizeLanguage(value: unknown): string {
-  if (
-    typeof value !== "string" ||
-    value === "" ||
-    value !== value.trim() ||
-    hasUnsafeControlCharacters(value)
-  ) {
-    throw invalidNotes("Release-note language is invalid.");
-  }
-  try {
-    const [canonical] = Intl.getCanonicalLocales(value);
-    if (!canonical) throw invalidNotes("Release-note language is invalid.");
-    return canonical;
-  } catch (cause) {
-    if (cause instanceof ReleaseError) throw cause;
-    throw invalidNotes("Release-note language is invalid.");
-  }
-}
-
-function validateNoteText(value: unknown): string {
-  if (
-    typeof value !== "string" ||
-    value.trim() === "" ||
-    hasUnsafeControlCharacters(value) ||
-    Array.from(value).length > RELEASE_NOTE_MAX_UNICODE_CODE_POINTS
-  ) {
-    throw invalidNotes("Release-note text is invalid or exceeds the 500-character limit.");
-  }
-  return value;
-}
-
-function normalizeOneNote(value: unknown): LocalizedReleaseNote {
-  if (!isRecord(value)) throw invalidNotes();
-  const keys = Object.keys(value).sort();
-  if (keys.length !== 2 || keys[0] !== "language" || keys[1] !== "text") {
-    throw invalidNotes();
-  }
-  return Object.freeze({
-    language: canonicalizeLanguage(value.language),
-    text: validateNoteText(value.text),
-  });
-}
-
-function sortNotes(notes: readonly LocalizedReleaseNote[]): readonly LocalizedReleaseNote[] {
-  return Object.freeze(
-    [...notes].sort((left, right) =>
-      left.language < right.language ? -1 : left.language > right.language ? 1 : 0,
-    ),
-  );
-}
-
-function rejectDuplicateLanguages(notes: readonly LocalizedReleaseNote[]): void {
-  const seen = new Set<string>();
-  for (const note of notes) {
-    if (seen.has(note.language)) throw invalidNotes("Duplicate release-note language.");
-    seen.add(note.language);
-  }
-}
-
-/** Validate and canonicalize caller-bound notes; note text is never rewritten. */
-export function normalizeReleaseNotesIntent(value: unknown): readonly LocalizedReleaseNote[] {
-  if (!Array.isArray(value) || value.length < 1) {
-    throw invalidNotes("At least one localized release note is required.");
-  }
-  const notes = value.map(normalizeOneNote);
-  rejectDuplicateLanguages(notes);
-  return sortNotes(notes);
-}
-
-function normalizeExistingNotes(
-  value: readonly LocalizedReleaseNote[] | undefined,
-): readonly LocalizedReleaseNote[] | undefined {
-  if (value === undefined) return undefined;
-  if (!Array.isArray(value)) {
-    throw new ReleaseError(
-      "TRACK_STATE_NOT_ROUNDTRIPPABLE",
-      "Existing target-track release notes cannot be safely round-tripped.",
-    );
-  }
-  try {
-    const notes = value.map(normalizeOneNote);
-    rejectDuplicateLanguages(notes);
-    return Object.freeze(notes);
-  } catch (cause) {
-    if (cause instanceof ReleaseError && cause.code === "TRACK_STATE_NOT_ROUNDTRIPPABLE") {
-      throw cause;
-    }
-    throw new ReleaseError(
-      "TRACK_STATE_NOT_ROUNDTRIPPABLE",
-      "Existing target-track release notes cannot be safely round-tripped.",
-      { cause },
-    );
-  }
-}
-
-function canonicalVersionCodeSet(values: readonly unknown[]): readonly string[] {
-  const normalized = values.map((value) => normalizeReleaseVersionCode(value));
-  const unique = [...new Set(normalized)];
-  unique.sort((left, right) => {
-    const a = BigInt(left);
-    const b = BigInt(right);
-    return a < b ? -1 : a > b ? 1 : 0;
-  });
-  return Object.freeze(unique);
-}
-
-function sameStringSet(left: readonly string[], right: readonly string[]): boolean {
-  return left.length === right.length && left.every((value, index) => value === right[index]);
-}
-
-function notesMap(notes: readonly LocalizedReleaseNote[] | undefined): Map<string, string> {
-  const map = new Map<string, string>();
-  for (const note of notes ?? []) {
-    if (map.has(note.language)) throw new Error("duplicate release note language");
-    map.set(note.language, note.text);
-  }
-  return map;
-}
-
-function sameNotes(
-  left: readonly LocalizedReleaseNote[] | undefined,
-  right: readonly LocalizedReleaseNote[] | undefined,
-): boolean {
-  let leftMap: Map<string, string>;
-  let rightMap: Map<string, string>;
-  try {
-    leftMap = notesMap(left);
-    rightMap = notesMap(right);
-  } catch {
-    return false;
-  }
-  if (leftMap.size !== rightMap.size) return false;
-  for (const [language, text] of leftMap) {
-    if (rightMap.get(language) !== text) return false;
-  }
-  return true;
-}
-
-function sameCountryTargeting(
-  left: ReleaseCountryTargeting | undefined,
-  right: ReleaseCountryTargeting | undefined,
-): boolean {
-  if (left === undefined || right === undefined) return left === right;
-  const leftCountries = [...left.countries].sort();
-  const rightCountries = [...right.countries].sort();
-  return (
-    left.includeRestOfWorld === right.includeRestOfWorld &&
-    sameStringSet(leftCountries, rightCountries)
-  );
-}
-
-function sameRelease(left: ReleaseState, right: ReleaseState): boolean {
-  let leftCodes: readonly string[];
-  let rightCodes: readonly string[];
-  try {
-    leftCodes = canonicalVersionCodeSet(left.versionCodes);
-    rightCodes = canonicalVersionCodeSet(right.versionCodes);
-  } catch {
-    return false;
-  }
-  return (
-    left.name === right.name &&
-    left.status === right.status &&
-    sameStringSet(leftCodes, rightCodes) &&
-    left.userFraction === right.userFraction &&
-    sameNotes(left.releaseNotes, right.releaseNotes) &&
-    sameCountryTargeting(left.countryTargeting, right.countryTargeting) &&
-    left.inAppUpdatePriority === right.inAppUpdatePriority
-  );
-}
-
-function sameTrack(left: ReleaseTrackState, right: ReleaseTrackState): boolean {
-  return (
-    left.track === right.track &&
-    left.releases.length === right.releases.length &&
-    left.releases.every((release, index) => {
-      const expected = right.releases[index];
-      return expected !== undefined && sameRelease(release, expected);
-    })
-  );
-}
-
-function cloneRelease(release: ReleaseState): ReleaseState {
-  const notes = normalizeExistingNotes(release.releaseNotes);
-  return Object.freeze({
-    ...(release.name !== undefined ? { name: release.name } : {}),
-    status: release.status,
-    versionCodes: Object.freeze([...release.versionCodes]),
-    ...(release.userFraction !== undefined ? { userFraction: release.userFraction } : {}),
-    ...(notes !== undefined ? { releaseNotes: notes } : {}),
-    ...(release.countryTargeting !== undefined
-      ? {
-          countryTargeting: Object.freeze({
-            countries: Object.freeze([...release.countryTargeting.countries]),
-            includeRestOfWorld: release.countryTargeting.includeRestOfWorld,
-          }),
-        }
-      : {}),
-    ...(release.inAppUpdatePriority !== undefined
-      ? { inAppUpdatePriority: release.inAppUpdatePriority }
-      : {}),
-  });
-}
-
-function cloneTrack(track: ReleaseTrackState): ReleaseTrackState {
-  return Object.freeze({
-    track: track.track,
-    releases: Object.freeze(track.releases.map(cloneRelease)),
   });
 }
 
@@ -337,23 +122,6 @@ function trackToUpdate(track: ReleaseTrackState): ReleaseTrackUpdateRequest {
   return Object.freeze({
     track: track.track,
     releases: Object.freeze(track.releases.map(releaseToUpdate)),
-  });
-}
-
-function replaceReleaseNotes(
-  track: ReleaseTrackState,
-  targetIndex: number,
-  notes: readonly LocalizedReleaseNote[],
-): ReleaseTrackState {
-  return Object.freeze({
-    track: track.track,
-    releases: Object.freeze(
-      track.releases.map((release, index) =>
-        index === targetIndex
-          ? Object.freeze({ ...cloneRelease(release), releaseNotes: notes })
-          : cloneRelease(release),
-      ),
-    ),
   });
 }
 

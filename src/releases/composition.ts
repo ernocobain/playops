@@ -51,7 +51,11 @@ import {
   createReleaseExactVerificationTool,
   type ReleaseExactVerificationToolOptions,
 } from "./verify-committed-release-tool.js";
-import { createReleaseVerificationIntent } from "./readback-approval.js";
+import type { ReleaseVerificationEvidenceSink } from "./verification-evidence.js";
+import {
+  createReleaseVerificationIntent,
+  createReleaseStateVerificationIntent,
+} from "./readback-approval.js";
 import { createReleaseRolloutTool, type ReleaseRolloutToolOptions } from "./rollout-tool.js";
 import type { ReleaseRolloutIntent } from "./rollout-approval.js";
 import {
@@ -129,8 +133,20 @@ export interface ReleaseCompositionOptions {
   };
   /** Operation-scoped exact Phase 4.9 intent for safe Phase 4.11 Layer A. */
   readonly inspectCommittedRelease?: Pick<ReleaseCommitToolOptions, "intent">;
-  /** Operation-scoped exact Phase 4.9 intent for destructive Phase 4.11 Layer B. */
-  readonly verifyCommittedRelease?: Pick<ReleaseCommitToolOptions, "intent">;
+  /**
+   * Operation-scoped durable Stage-3E verification evidence for the destructive
+   * Phase 4.11 Layer B read-back: the committed release identity plus the
+   * authoritative commit-state digest. Never a commit intent, never
+   * client-supplied, and never release-note or rollout-fraction text.
+   */
+  readonly verifyCommittedRelease?: {
+    readonly targetTrack: string;
+    readonly versionCode: string;
+    readonly expectedReleaseName: string;
+    readonly expectedStateDigest: string;
+  };
+  /** Trusted optional internal consumer; not config, tool input, audit or wire data. */
+  readonly verificationEvidenceSink?: ReleaseVerificationEvidenceSink;
   /** Operation-scoped exact Phase 4.12 staged-rollout advancement. */
   readonly updateRolloutFraction?: Pick<ReleaseRolloutToolOptions, "intent"> & {
     readonly intent: ReleaseRolloutIntent;
@@ -397,12 +413,18 @@ export function createReleaseComposition(
     options.verifyCommittedRelease && cleanupJournal
       ? createReleaseExactVerificationTool({
           packageName,
-          intent: createReleaseVerificationIntent(options.verifyCommittedRelease.intent),
+          intent: createReleaseStateVerificationIntent({
+            packageName,
+            ...options.verifyCommittedRelease,
+          }),
           summaryGateway: gateway,
           temporaryEditGateway: gateway,
           sessionStore: store,
           cleanupJournal,
           auditLedger: ledger,
+          ...(options.verificationEvidenceSink !== undefined
+            ? { evidenceSink: options.verificationEvidenceSink }
+            : {}),
           ...(deps.now ? { now: deps.now } : {}),
         } satisfies ReleaseExactVerificationToolOptions)
       : undefined;

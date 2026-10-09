@@ -681,6 +681,10 @@ const FAMILIES: Readonly<Record<string, FamilySpec>> = Object.freeze({
       VERIFICATION_EDIT_RESPONSE_INVALID:
         "The temporary verification edit returned an unusable identity.",
       VERIFICATION_TRACK_READ_FAILED: "The verification track read failed.",
+      VERIFICATION_EVIDENCE_PERSISTENCE_FAILED: {
+        category: "persistence",
+        message: "The verification lifecycle evidence could not be recorded locally.",
+      },
       VERIFICATION_STATE_MISMATCH: {
         category: "conflict",
         message: "The verified track state did not match the expected state.",

@@ -13,10 +13,19 @@ authorization.
 ## 1. Versioning model
 
 - PlayOps uses **Semantic Versioning**: `MAJOR.MINOR.PATCH`.
-- The prepared package version for this release line is **`0.1.0`**.
-- The Git release tag for that version is **`v0.1.0`**.
-- PlayOps stays **pre-1.0** for now. `0.1.0` is the first installable
-  operational release line; it is **not** a claim of production certification,
+- `CURRENT_VERSION` is the version actually recorded in `package.json`, not a
+  hardcoded value in this procedure. Read it from the repository:
+
+  ```sh
+  CURRENT_VERSION="$(node -p "require('./package.json').version")"
+  ```
+
+- `NEXT_VERSION` is a proposed `MAJOR.MINOR.PATCH` selected by the operator for
+  a future release. Selecting it does not change the repository, create a tag,
+  or authorize a release. Version preparation requires separate authorization.
+- `VERSION` below is re-read from the prepared manifest after that authorized
+  preparation; the corresponding annotated Git tag is `v${VERSION}`.
+- PlayOps stays **pre-1.0** for now. A prepared release is **not** a claim of production certification,
   stable 1.0 API compatibility, or verified live Google mutation authorization.
 
 ### Pre-1.0 change policy
@@ -95,7 +104,8 @@ artifact and the tag both belong to the commit that contains it.
 5. Run all five gates: `NODE_ENV=development npm run build`,
    `npm run test:run`, `npm run lint`, `npm run typecheck`, and
    `npm run format:check`.
-6. Run the security, package, and documentation checks:
+6. Run the producer clean-build, package, and documentation checks:
+   `node --test scripts/clean-dist.test.mjs`,
    `node --test scripts/package-content.test.mjs`,
    `node --test scripts/documentation-checks.test.mjs`, and
    `node --test scripts/release-version.test.mjs`.
@@ -130,15 +140,38 @@ artifact and the tag both belong to the commit that contains it.
 Do not automate publication: no script in this repository publishes, pushes, or
 tags on its own.
 
+### Clean-build and package-content contract
+
+`npm run build` removes only this repository's generated `dist` directory through
+`scripts/clean-dist.mjs`, then regenerates it from the current `src` tree using
+the installed TypeScript compiler. The cleaner resolves the repository from its
+own script location, not the caller's working directory. It validates the PlayOps
+package and the exact `dist` compiler output, refuses filesystem-root boundaries,
+links or ordinary files at the output path, and accepts no configurable deletion
+target. A missing `dist` is a no-op.
+
+The existing `prepack` hook runs that same build before ordinary `npm pack`, so
+deleted or renamed modules cannot survive as stale compiled package entries.
+Do not disable lifecycle scripts for release packaging. A pack with
+`--ignore-scripts` is only a diagnostic of already-built output, not the release
+build procedure.
+
+Compare normalized relative package entry lists and per-entry content hashes
+across repeat clean builds and the isolated `test:package` artifact. Counts alone
+do not prove equal payloads. Runtime payload contents must agree; raw `.tgz`
+byte hashes need not agree if archive metadata differs. Record each observed
+archive hash separately rather than substituting a hash from another build.
+
 ## 5. Tag contract and tag safety
 
 Releases use **annotated** tags:
 
 ```sh
-git tag -a v0.1.0 -m "PlayOps v0.1.0"
+VERSION="$(node -p "require('./package.json').version")"
+git tag -a "v${VERSION}" -m "PlayOps v${VERSION}"
 ```
 
-`package.json` version `0.1.0` corresponds to Git tag `v0.1.0`. A version bump
+`package.json` version `${VERSION}` corresponds to Git tag `v${VERSION}`. A version bump
 without that tag is not a release, and a tag without the matching manifest,
 lockfile, and changelog entry is not a release either.
 
@@ -147,12 +180,12 @@ Before tagging, verify all three of the following and require a clean tree:
 ```sh
 git status --short
 git rev-parse HEAD
-git tag --list v0.1.0
+git tag --list "v${VERSION}"
 ```
 
 - `git status --short` must print nothing.
 - `git rev-parse HEAD` must be the intended release commit.
-- `git tag --list v0.1.0` must print nothing. If the tag already exists, **stop
+- `git tag --list "v${VERSION}"` must print nothing. If the tag already exists, **stop
   and review**: an existing release tag is never silently moved or overwritten.
 
 Never use `git tag -f` for a normal release. If a tag was created in error and
@@ -162,14 +195,14 @@ if it has been distributed, publish a new version instead.
 After tagging, confirm the tag resolves to the release commit:
 
 ```sh
-git rev-parse v0.1.0^{commit}
-git show --stat v0.1.0
+git rev-parse "v${VERSION}^{commit}"
+git show --stat "v${VERSION}"
 ```
 
 ## 6. Release artifact
 
 - The Phase 6 release artifact is the npm tarball, conceptually
-  `playops-0.1.0.tgz`. Its precise name follows the package version.
+  `playops-${VERSION}.tgz`. Its precise name follows the package version.
 - The tarball payload is governed by the `files` allowlist in `package.json`:
   compiled runtime JavaScript, the operator-safe example configuration,
   `README.md`, `CHANGELOG.md`, `LICENSE`, and the operator guides under `docs/`.
@@ -222,15 +255,13 @@ pushes the real repository.
   internally consistent.
 - Version consistency is enforced against the repository working tree. A release
   produced from a differently patched checkout is out of contract.
-- A freshly cloned working copy does **not** contain
-  `tests/fixtures/service-account.valid.json`: `.gitignore` deliberately excludes
-  credential-shaped fixture names, so that fake fixture stays local. Until it is
-  recreated locally, `npm run test:run` fails one assertion in
-  `tests/credentials.test.ts` (`Credential file not found`). Nothing in the
-  release artifact or the installed-consumer path depends on it; only step 5 of
-  the checklist does, whenever the full suite is part of the gate.
+- `tests/fixtures/service-account.valid.json` is a tracked synthetic fixture.
+  The explicit `.gitignore` exception retains it in source checkouts while real
+  credential files remain excluded. It is deliberately not shipped in the npm
+  tarball, and the consumer does not depend on it. Do not replace it with real
+  service-account material.
 - The dependency audit (`npm audit --omit=dev`, `npm audit`) reports the state of
   the recorded versions at release time; it is not a guarantee about future
   advisories.
 - Live Google mutation authorization is not established by any release step and
-  remains unverified in `0.1.0`.
+  requires separate, explicitly authorized operational evidence for each release.

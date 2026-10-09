@@ -1,9 +1,22 @@
 /**
- * Phase 4.11 — separate approval contract for exact Track read-back.
+ * Phase 4.11 / Stage 3E.1 — exact committed-release verification contracts.
  *
- * Layer A (`applications.tracks.releases.list`) is read-only and never uses this
- * binding. Layer B uses it because `edits.insert` may invalidate another active
- * edit owned by the same API user for the same application.
+ * Layer A (`applications.tracks.releases.list`) is read-only and carries no
+ * approval: `ReleaseVerificationIntent` below is the Layer-A identity
+ * expectation and the dry-run plan intent.
+ *
+ * Layer B (create one temporary edit, read the exact track, delete it) is
+ * destructive because `edits.insert` may invalidate another active edit owned by
+ * the same API user for the same application.
+ *
+ * Stage 3E.1 replaced the Phase 4.11 field-comparison approval domain
+ * (`exact_track_state_readback`, version 1) with the durable commit-state digest
+ * domain (`exact_commit_state_readback`, version 2): after a commit is
+ * acknowledged the field-level expectation (release notes, rollout fraction)
+ * is not durably stored anywhere, while
+ * `ReleaseCommitAttemptJournalRecord.expectedStateDigest` is. The old approval
+ * constructors were removed, so an old-domain approval can never authorize the
+ * new semantics.
  */
 import { createHash } from "node:crypto";
 import {
@@ -18,8 +31,23 @@ import {
 import type { ReleaseCommitIntent } from "./commit-approval.js";
 
 export const RELEASES_VERIFY_COMMITTED_RELEASE_TOOL_NAME = "releases.verify_committed_release";
+
+/**
+ * Layer-A identity / dry-run plan operation kind. Since Stage 3E.1 this is NOT an
+ * approval domain: the Layer-B approval binds
+ * `RELEASE_STATE_VERIFICATION_OPERATION_KIND` instead.
+ */
 export const RELEASE_VERIFICATION_OPERATION_KIND = "exact_track_state_readback" as const;
 
+/** Stage 3E.1 Layer-B approval domain: durable commit-state digest verification. */
+export const RELEASE_STATE_VERIFICATION_OPERATION_KIND = "exact_commit_state_readback" as const;
+export const RELEASE_STATE_VERIFICATION_INTENT_VERSION = 2 as const;
+
+/**
+ * Layer-A identity expectation for one committed release: which app, track,
+ * version and release name must appear in the direct deployed-release summary.
+ * It is never an approval domain and never an exact-state proof.
+ */
 export interface ReleaseVerificationIntent {
   readonly version: 1;
   readonly operationKind: typeof RELEASE_VERIFICATION_OPERATION_KIND;
@@ -32,7 +60,37 @@ export interface ReleaseVerificationIntent {
   readonly expectedReleaseNotes: readonly LocalizedReleaseNote[];
 }
 
-export interface ReleaseVerificationApprovalBinding {
+/**
+ * Stage 3E.1 Layer-B intent: the durable expectation that survives an
+ * acknowledged commit.
+ *
+ * `expectedStateDigest` is the decisive authority and is compared against
+ * `createReleaseCommitStateDigest(observedTrack)` and nothing else.
+ * `expectedReleaseName` is a durable Layer-A cross-check (the commit-attempt
+ * journal record's release name); it is never an exact-proof substitute.
+ * Release-note text and rollout fraction are deliberately absent: they are not
+ * durably stored and are already covered by the digest.
+ */
+export interface ReleaseStateVerificationIntent {
+  readonly version: typeof RELEASE_STATE_VERIFICATION_INTENT_VERSION;
+  readonly operationKind: typeof RELEASE_STATE_VERIFICATION_OPERATION_KIND;
+  readonly packageName: string;
+  readonly targetTrack: string;
+  readonly versionCode: string;
+  readonly expectedReleaseName: string;
+  readonly expectedStateDigest: string;
+}
+
+/** Durable server-owned evidence accepted by the Stage 3E.1 intent builder. */
+export interface ReleaseStateVerificationIntentInput {
+  readonly packageName: string;
+  readonly targetTrack: string;
+  readonly versionCode: string;
+  readonly expectedReleaseName: string;
+  readonly expectedStateDigest: string;
+}
+
+export interface ReleaseStateVerificationApprovalBinding {
   readonly permission: "destructive";
   readonly createRequestDigest: (validatedInput: unknown) => string;
   readonly createSafeSummary: (validatedInput: unknown) => string;
@@ -143,13 +201,54 @@ export function createReleaseVerificationIntent(
   });
 }
 
-/** Digest includes exact notes; the human summary intentionally does not. */
-export function createReleaseVerificationRequestDigest(intent: ReleaseVerificationIntent): string {
+/**
+ * Stage 3E.1: build the Layer-B intent from durable commit evidence only.
+ *
+ * The only accepted inputs are values that survive an acknowledged commit
+ * (package, track, version, the journal's release name and its
+ * `expectedStateDigest`). Release-note text and rollout fraction are neither
+ * required nor accepted.
+ */
+export function createReleaseStateVerificationIntent(
+  input: ReleaseStateVerificationIntentInput,
+): ReleaseStateVerificationIntent {
+  if (typeof input !== "object" || input === null) {
+    throw invalid("Verification evidence is invalid.");
+  }
+  const packageName = validateReleasePackageName(input.packageName);
+  const targetTrack = validateReleaseTargetTrack(input.targetTrack);
+  const versionCode = normalizeReleaseVersionCode(input.versionCode);
+  if (typeof input.expectedReleaseName !== "string" || input.expectedReleaseName.trim() === "") {
+    throw invalid("Expected committed release name is invalid.");
+  }
+  if (
+    typeof input.expectedStateDigest !== "string" ||
+    !/^[0-9a-f]{64}$/u.test(input.expectedStateDigest)
+  ) {
+    throw invalid("Expected committed-state digest is invalid.");
+  }
+  return Object.freeze({
+    version: RELEASE_STATE_VERIFICATION_INTENT_VERSION,
+    operationKind: RELEASE_STATE_VERIFICATION_OPERATION_KIND,
+    packageName,
+    targetTrack,
+    versionCode,
+    expectedReleaseName: input.expectedReleaseName,
+    expectedStateDigest: input.expectedStateDigest,
+  });
+}
+
+/**
+ * Digest of the exact Stage 3E.1 Layer-B verification request. It binds the
+ * durable commit-state digest, so it can never collide with the retired
+ * Phase 4.11 field-comparison domain (different version and operation kind).
+ */
+export function createReleaseStateVerificationRequestDigest(
+  intent: ReleaseStateVerificationIntent,
+): string {
   return digest({
     expectedReleaseName: intent.expectedReleaseName,
-    expectedReleaseNotes: intent.expectedReleaseNotes,
-    expectedStatus: intent.expectedStatus,
-    expectedUserFraction: intent.expectedUserFraction ?? null,
+    expectedStateDigest: intent.expectedStateDigest,
     operationKind: intent.operationKind,
     packageName: intent.packageName,
     targetTrack: intent.targetTrack,
@@ -158,26 +257,19 @@ export function createReleaseVerificationRequestDigest(intent: ReleaseVerificati
   });
 }
 
-/** Separate destructive approval; it never authorizes commit or any release mutation. */
-export function createReleaseVerificationApprovalBinding(
-  intent: ReleaseVerificationIntent,
-): ReleaseVerificationApprovalBinding {
-  const requestDigest = createReleaseVerificationRequestDigest(intent);
-  const rollout =
-    intent.expectedUserFraction === undefined ? "absent" : String(intent.expectedUserFraction);
-  const languages =
-    intent.expectedReleaseNotes.length === 0
-      ? "(none)"
-      : intent.expectedReleaseNotes.map((note) => note.language).join(", ");
+/** Separate destructive approval; it never authorizes commit, publish, or notes. */
+export function createReleaseStateVerificationApprovalBinding(
+  intent: ReleaseStateVerificationIntent,
+): ReleaseStateVerificationApprovalBinding {
+  const requestDigest = createReleaseStateVerificationRequestDigest(intent);
   const summary = [
-    "DESTRUCTIVE read-back verification of a committed Google Play release.",
+    "DESTRUCTIVE read-back verification of the committed Google Play release state.",
     `App: ${intent.packageName}`,
     `Track: ${intent.targetTrack}`,
     `Version: ${intent.versionCode}`,
     `Expected release: ${intent.expectedReleaseName}`,
-    `Expected status: ${intent.expectedStatus}`,
-    `Expected rollout fraction: ${rollout}`,
-    `Expected release-note languages: ${languages}`,
+    `Expected committed-state digest: ${intent.expectedStateDigest}`,
+    "Success requires the observed committed track state to digest-match that durable expected digest exactly; no release-note or rollout-fraction comparison is performed.",
     "A temporary Google Play edit will be created only to inspect the exact Track state.",
     "Creating this edit may invalidate another active edit owned by this API user for the same application.",
     "No release mutation or edits.commit will be performed.",

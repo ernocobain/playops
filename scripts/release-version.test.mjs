@@ -16,6 +16,24 @@ import {
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 
+test("release procedure derives current/next versions and never pins an obsolete prepared tag", () => {
+  const procedure = readFileSync(join(root, "docs", "release-process.md"), "utf8");
+  assert.ok(procedure.includes("CURRENT_VERSION"));
+  assert.ok(procedure.includes("NEXT_VERSION"));
+  assert.ok(procedure.includes("v${VERSION}"));
+  assert.equal(/prepared package version[^\n]*0\.1\.0/u.test(procedure), false);
+  assert.equal(/git (?:tag|rev-parse|show)[^\n]*v0\.1\.0/u.test(procedure), false);
+});
+
+test("release fixture documentation agrees with the tracked synthetic-fixture exception", () => {
+  const procedure = readFileSync(join(root, "docs", "release-process.md"), "utf8");
+  const ignore = readFileSync(join(root, ".gitignore"), "utf8");
+  assert.ok(ignore.includes("!tests/fixtures/service-account.valid.json"));
+  assert.ok(procedure.includes("tracked synthetic fixture"));
+  assert.equal(procedure.includes("that fake fixture stays local"), false);
+  assert.equal(procedure.includes("Credential file not found"), false);
+});
+
 const state = (overrides = {}) => {
   const base = {
     packageVersion: "1.2.3",
