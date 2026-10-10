@@ -1,0 +1,38 @@
+[Unit]
+Description=PlayOps Google Play release daemon (operator transport)
+Documentation=file:/opt/playops/current/docs/deployment-production.md
+After=systemd-tmpfiles-setup.service
+
+[Service]
+User=playops
+Group=playops-operator
+SupplementaryGroups=playops
+WorkingDirectory=/var/lib/playops
+ExecStart=/opt/playops/node24/bin/node /opt/playops/current/dist/daemon/main.js --config /etc/playops/playops.yaml
+RuntimeDirectory=playops
+RuntimeDirectoryMode=0750
+StateDirectory=playops
+StateDirectoryMode=0700
+LogsDirectory=playops
+LogsDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

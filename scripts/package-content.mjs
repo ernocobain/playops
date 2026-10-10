@@ -26,7 +26,20 @@ export const OPERATOR_DOC_FILES = Object.freeze([
   "docs/release-pipeline.md",
   "docs/release-process.md",
   "docs/operator-client.md",
+  "docs/deployment-production.md",
 ]);
+
+/**
+ * Stage 4C.1: the repository-owned deployment templates that ship verbatim.
+ * These are templates only — the repository installs nothing.
+ */
+export const DEPLOYMENT_TEMPLATE_FILES = Object.freeze([
+  "deploy/systemd/playops.service",
+  "deploy/tmpfiles.d/playops.conf",
+]);
+
+/** The `files` globs that carry the deployment templates. */
+export const DEPLOYMENT_TEMPLATE_GLOBS = Object.freeze(["deploy/**"]);
 
 /** Root-level release-consumer files. `CHANGELOG.md` ships deliberately. */
 export const ROOT_PAYLOAD_FILES = Object.freeze([
@@ -62,6 +75,7 @@ export const APPROVED_PACKAGE_FIELDS = Object.freeze({
     "config/playops.example.yaml",
     "CHANGELOG.md",
     ...OPERATOR_DOC_FILES,
+    ...DEPLOYMENT_TEMPLATE_GLOBS,
   ]),
 });
 

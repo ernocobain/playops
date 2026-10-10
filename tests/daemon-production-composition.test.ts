@@ -7,7 +7,7 @@
  * so the pinned /etc anchor is never touched by a test.
  */
 import { createPublicKey, generateKeyPairSync, sign, type KeyObject } from "node:crypto";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import type * as NodeDns from "node:dns";
 import type * as NodeHttp from "node:http";
 import type * as NodeHttps from "node:https";
@@ -67,6 +67,19 @@ vi.mock("node:dns", async (importOriginal) => {
 });
 
 const PACKAGE = "com.example.app";
+/**
+ * Stage 4C.1A seam: a temp fixture config/credential is owned by the test uid and
+ * the injected process group identity stands in for the daemon's effective (socket
+ * capability) group so the secret-service policy accepts an unprivileged fixture.
+ * Module argument only — never env/CLI/config.
+ */
+const PROBE = mkdtempSync(join(tmpdir(), "playops-4c1a-compose-probe-"));
+const TEST_GID = lstatSync(PROBE).gid;
+rmSync(PROBE, { recursive: true, force: true });
+const TEST_POLICY = {
+  trustedOwnerUid: process.getuid?.() ?? 0,
+  processGroupIdentity: { effectiveGid: TEST_GID + 1, supplementaryGids: [TEST_GID] },
+};
 const roots: string[] = [];
 
 function tempRoot(): string {
@@ -103,7 +116,7 @@ function fixture(credentialPrivateKey?: string): {
       private_key: credentialPrivateKey ?? "[REDACTED PRIVATE KEY]\n",
       token_uri: "https://oauth2.googleapis.com/token",
     }),
-    { mode: 0o600 },
+    { mode: 0o640 },
   );
   const configPath = join(root, "playops.yaml");
   writeFileSync(
@@ -126,6 +139,10 @@ function fixture(credentialPrivateKey?: string): {
       "",
     ].join("\n"),
   );
+  // Stage 4C.1A: the config file is a secret-bearing trust input; make its mode
+  // explicit (0640) so the fixture is neither group-writable under umask 0002 nor
+  // world-readable.
+  chmodSync(configPath, 0o640);
   const { privateKey } = generateKeyPairSync("ed25519");
   return { root, configPath, privateKey: privateKey as KeyObject };
 }
@@ -141,6 +158,7 @@ async function compose(
   return createProductionDaemonApplication({
     configPath,
     env: {},
+    trustPolicy: TEST_POLICY,
     factories: {
       loadCredentials: (): ServiceAccountCredentials => ({
         type: "service_account",
@@ -205,7 +223,7 @@ describe("stage 4A.1 production composition", () => {
       join(root, "state", "commit-attempt-journal.json"),
     );
     expect(composition.socketPath).toBe(join(root, "run", "playops.sock"));
-    expect(composition.socketMode).toBe(0o600);
+    expect(composition.socketMode).toBe(0o660);
 
     // Exactly one coordinator, exposed and usable.
     expect(composition.coordinator.isPackageOperationHeld(PACKAGE)).toBe(false);
@@ -307,6 +325,7 @@ describe("stage 4A.1 production composition", () => {
         configPath,
         // A relative daemon path from the environment must still fail closed.
         env: { PLAYOPS_DAEMON_PENDING_STORE_PATH: "relative/pending" },
+        trustPolicy: TEST_POLICY,
         // Fake factories only: the pinned /etc anchor is never touched.
         factories: {
           loadCredentials: (): ServiceAccountCredentials => ({
@@ -343,6 +362,7 @@ describe("stage 4A.1 production composition", () => {
       const application = await createProductionDaemonApplication({
         configPath,
         env: {},
+        trustPolicy: TEST_POLICY,
         factories: {
           createVerifier: () => createOperatorApprovalVerifier(publicKey, "stage-4a1-test-anchor"),
         },

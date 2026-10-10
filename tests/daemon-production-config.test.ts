@@ -1,11 +1,22 @@
 /**
- * Stage 4A.1 — production daemon configuration and path validation.
+ * Stage 4A.1 + Stage 4C.1 — production daemon configuration, path and
+ * filesystem-trust validation.
  *
  * Offline, read-only: temporary directories only, no /etc, /var or /run access,
  * no Google call, no socket bind. Synthetic credential fixtures are written by
- * this test and are never real credentials.
+ * this test and are never real credentials. The Stage 4C.1 owner/mode checks use
+ * the module-argument trust-policy seam (a non-root uid) so no privilege is
+ * required; the production DEFAULT policy stays exactly `trustedOwnerUid: 0`.
  */
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -15,9 +26,25 @@ import {
   ProductionDaemonConfigError,
   validateProductionDaemonConfig,
   validateProductionDaemonFilesystem,
+  type ValidatedProductionDaemonConfig,
 } from "../src/daemon/production-composition.js";
+import type { FsTrustPolicy } from "../src/shared/fs-trust.js";
 
 const PACKAGE = "com.example.app";
+const CONFIG_TEXT = `google_play:\n  package_name: "${PACKAGE}"\n`;
+/**
+ * Module-argument seam: a temp fixture is owned by the test uid, not root. The
+ * injected process group identity stands in for the production daemon's effective
+ * (socket capability) group so the secret-service policy accepts an unprivileged
+ * fixture; it is a module argument only, never env/CLI/config.
+ */
+const PROBE = mkdtempSync(join(tmpdir(), "playops-4c1a-config-probe-"));
+const TEST_GID = lstatSync(PROBE).gid;
+rmSync(PROBE, { recursive: true, force: true });
+const TEST_POLICY: FsTrustPolicy = {
+  trustedOwnerUid: process.getuid?.() ?? 0,
+  processGroupIdentity: { effectiveGid: TEST_GID + 1, supplementaryGids: [TEST_GID] },
+};
 const roots: string[] = [];
 
 function tempRoot(mode = 0o700): string {
@@ -73,7 +100,20 @@ function provision(root: string): void {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     chmodSync(dir, 0o700);
   }
-  writeFileSync(join(root, "service-account.json"), "{}\n", { mode: 0o600 });
+  // Stage 4C.1A: the config file and the credential are secret-bearing
+  // production inputs, so the fixtures use the enforced secret-service mode.
+  writeFileSync(join(root, "service-account.json"), "{}\n", { mode: 0o640 });
+  chmodSync(join(root, "service-account.json"), 0o640);
+  writeFileSync(join(root, "playops.yaml"), CONFIG_TEXT, { mode: 0o640 });
+  chmodSync(join(root, "playops.yaml"), 0o640);
+}
+
+function validatedConfig(root: string): ValidatedProductionDaemonConfig {
+  return validateProductionDaemonConfig(
+    daemonConfig(root),
+    join(root, "playops.yaml"),
+    TEST_POLICY,
+  );
 }
 
 describe("stage 4A.1 daemon config surface", () => {
@@ -208,18 +248,12 @@ describe("stage 4A.1 filesystem validation", () => {
   it("accepts a valid absolute secure temp hierarchy without writing anything", async () => {
     const root = tempRoot();
     provision(root);
-    const validated = validateProductionDaemonConfig(
-      daemonConfig(root),
-      join(root, "playops.yaml"),
-    );
-    const report = await validateProductionDaemonFilesystem(validated);
+    const report = await validateProductionDaemonFilesystem(validatedConfig(root), TEST_POLICY);
     expect(report.stateDirectories).toHaveLength(3);
     // Read-only: the audited files were not created.
     expect(report.existingStateFiles).toEqual([]);
     // Read-only: the second pass still succeeds and writes nothing.
-    const again = await validateProductionDaemonFilesystem(
-      validateProductionDaemonConfig(daemonConfig(root), join(root, "playops.yaml")),
-    );
+    const again = await validateProductionDaemonFilesystem(validatedConfig(root), TEST_POLICY);
     expect(again.existingStateFiles).toEqual([]);
   });
 
@@ -228,27 +262,21 @@ describe("stage 4A.1 filesystem validation", () => {
     provision(root);
     rmSync(join(root, "claims"), { recursive: true });
 
-    const missing = validateProductionDaemonConfig(daemonConfig(root), join(root, "playops.yaml"));
-    await expect(validateProductionDaemonFilesystem(missing)).rejects.toThrow(
-      ProductionDaemonConfigError,
-    );
+    await expect(
+      validateProductionDaemonFilesystem(validatedConfig(root), TEST_POLICY),
+    ).rejects.toThrow(ProductionDaemonConfigError);
 
     mkdirSync(join(root, "claims"), { mode: 0o755 });
     chmodSync(join(root, "claims"), 0o755);
-    const wide = validateProductionDaemonConfig(daemonConfig(root), join(root, "playops.yaml"));
-    await expect(validateProductionDaemonFilesystem(wide)).rejects.toThrow(
-      ProductionDaemonConfigError,
-    );
+    await expect(
+      validateProductionDaemonFilesystem(validatedConfig(root), TEST_POLICY),
+    ).rejects.toThrow(ProductionDaemonConfigError);
 
     rmSync(join(root, "claims"), { recursive: true });
     symlinkSync(join(root, "write-intents"), join(root, "claims"), "dir");
-    const symlinked = validateProductionDaemonConfig(
-      daemonConfig(root),
-      join(root, "playops.yaml"),
-    );
-    await expect(validateProductionDaemonFilesystem(symlinked)).rejects.toThrow(
-      ProductionDaemonConfigError,
-    );
+    await expect(
+      validateProductionDaemonFilesystem(validatedConfig(root), TEST_POLICY),
+    ).rejects.toThrow(ProductionDaemonConfigError);
   });
 
   it("rejects a release state parent that is not exactly 0700 and an unwritable state directory", async () => {
@@ -258,18 +286,14 @@ describe("stage 4A.1 filesystem validation", () => {
     // looser parent must fail at startup instead of failing every commit attempt.
     chmodSync(join(root, "state"), 0o750);
     await expect(
-      validateProductionDaemonFilesystem(
-        validateProductionDaemonConfig(daemonConfig(root), join(root, "playops.yaml")),
-      ),
+      validateProductionDaemonFilesystem(validatedConfig(root), TEST_POLICY),
     ).rejects.toThrow(ProductionDaemonConfigError);
     chmodSync(join(root, "state"), 0o700);
 
     // A 0700 directory the daemon cannot write to is still unusable.
     chmodSync(join(root, "claims"), 0o500);
     await expect(
-      validateProductionDaemonFilesystem(
-        validateProductionDaemonConfig(daemonConfig(root), join(root, "playops.yaml")),
-      ),
+      validateProductionDaemonFilesystem(validatedConfig(root), TEST_POLICY),
     ).rejects.toThrow(ProductionDaemonConfigError);
     chmodSync(join(root, "claims"), 0o700);
   });
@@ -278,25 +302,17 @@ describe("stage 4A.1 filesystem validation", () => {
     const root = tempRoot();
     provision(root);
     writeFileSync(join(root, "run", "playops.sock"), "");
-    const withSocket = validateProductionDaemonConfig(
-      daemonConfig(root),
-      join(root, "playops.yaml"),
-    );
-    await expect(validateProductionDaemonFilesystem(withSocket)).rejects.toThrow(
-      ProductionDaemonConfigError,
-    );
+    await expect(
+      validateProductionDaemonFilesystem(validatedConfig(root), TEST_POLICY),
+    ).rejects.toThrow(ProductionDaemonConfigError);
 
     rmSync(join(root, "run", "playops.sock"));
     rmSync(join(root, "service-account.json"));
     writeFileSync(join(root, "real-credential.json"), "{}\n", { mode: 0o600 });
     symlinkSync(join(root, "real-credential.json"), join(root, "service-account.json"));
-    const withSymlink = validateProductionDaemonConfig(
-      daemonConfig(root),
-      join(root, "playops.yaml"),
-    );
-    await expect(validateProductionDaemonFilesystem(withSymlink)).rejects.toThrow(
-      ProductionDaemonConfigError,
-    );
+    await expect(
+      validateProductionDaemonFilesystem(validatedConfig(root), TEST_POLICY),
+    ).rejects.toThrow(ProductionDaemonConfigError);
   });
 
   it("rejects an existing state file with a wider mode", async () => {
@@ -304,12 +320,123 @@ describe("stage 4A.1 filesystem validation", () => {
     provision(root);
     writeFileSync(join(root, "state", "edit-session.json"), "{}\n", { mode: 0o644 });
     chmodSync(join(root, "state", "edit-session.json"), 0o644);
-    const validated = validateProductionDaemonConfig(
-      daemonConfig(root),
-      join(root, "playops.yaml"),
-    );
-    await expect(validateProductionDaemonFilesystem(validated)).rejects.toThrow(
+    await expect(
+      validateProductionDaemonFilesystem(validatedConfig(root), TEST_POLICY),
+    ).rejects.toThrow(ProductionDaemonConfigError);
+  });
+});
+
+describe("stage 4C.1 configuration-file and credential trust", () => {
+  it("accepts a secure fixture and refuses a symlinked, wrong-owner or group-writable config", () => {
+    const root = tempRoot();
+    provision(root);
+    const config = daemonConfig(root);
+    expect(validatedConfig(root).configPath).toBe(join(root, "playops.yaml"));
+
+    // Symlinked config file: refused by the O_NOFOLLOW leaf open.
+    const real = join(root, "real-config.yaml");
+    writeFileSync(real, CONFIG_TEXT, { mode: 0o640 });
+    chmodSync(real, 0o640);
+    const link = join(root, "linked.yaml");
+    symlinkSync(real, link);
+    expect(() => validateProductionDaemonConfig(config, link, TEST_POLICY)).toThrow(
       ProductionDaemonConfigError,
     );
+    expect(() => validateProductionDaemonConfig(config, link, TEST_POLICY)).toThrow(/integrity/u);
+
+    // Wrong owner: the production-declared trusted uid does not match.
+    expect(() =>
+      validateProductionDaemonConfig(config, join(root, "playops.yaml"), {
+        trustedOwnerUid: (process.getuid?.() ?? 0) + 1,
+      }),
+    ).toThrow(ProductionDaemonConfigError);
+
+    // Group/other-writable config file.
+    const wide = join(root, "wide.yaml");
+    writeFileSync(wide, CONFIG_TEXT, { mode: 0o600 });
+    chmodSync(wide, 0o666);
+    expect(() => validateProductionDaemonConfig(config, wide, TEST_POLICY)).toThrow(
+      ProductionDaemonConfigError,
+    );
+
+    // Unsafe parent directory (group/other-writable).
+    const unsafeDir = join(root, "unsafe");
+    mkdirSync(unsafeDir, { mode: 0o700 });
+    const inUnsafe = join(unsafeDir, "playops.yaml");
+    writeFileSync(inUnsafe, CONFIG_TEXT, { mode: 0o640 });
+    chmodSync(inUnsafe, 0o640);
+    chmodSync(unsafeDir, 0o777);
+    expect(() => validateProductionDaemonConfig(config, inUnsafe, TEST_POLICY)).toThrow(
+      ProductionDaemonConfigError,
+    );
+    chmodSync(unsafeDir, 0o700);
+  });
+
+  it("enforces the production default (root-owned) with no environment seam", () => {
+    const root = tempRoot();
+    provision(root);
+    // No policy argument: the DEFAULT production policy is `trustedOwnerUid: 0`,
+    // so the test-owned config file is refused. Nothing in the CLI or the
+    // environment can supply this policy; it is a module argument only.
+    expect(() =>
+      validateProductionDaemonConfig(daemonConfig(root), join(root, "playops.yaml")),
+    ).toThrow(ProductionDaemonConfigError);
+  });
+
+  it("refuses an unsafe credential leaf (symlink, group-writable, wrong owner)", async () => {
+    const root = tempRoot();
+    provision(root);
+
+    rmSync(join(root, "service-account.json"));
+    const realCredential = join(root, "real-credential.json");
+    writeFileSync(realCredential, "{}\n", { mode: 0o640 });
+    chmodSync(realCredential, 0o640);
+    symlinkSync(realCredential, join(root, "service-account.json"));
+    await expect(
+      validateProductionDaemonFilesystem(validatedConfig(root), TEST_POLICY),
+    ).rejects.toThrow(ProductionDaemonConfigError);
+
+    rmSync(join(root, "service-account.json"));
+    writeFileSync(join(root, "service-account.json"), "{}\n", { mode: 0o640 });
+    chmodSync(join(root, "service-account.json"), 0o666);
+    await expect(
+      validateProductionDaemonFilesystem(validatedConfig(root), TEST_POLICY),
+    ).rejects.toThrow(ProductionDaemonConfigError);
+
+    chmodSync(join(root, "service-account.json"), 0o640);
+    await expect(
+      validateProductionDaemonFilesystem(validatedConfig(root), {
+        trustedOwnerUid: (process.getuid?.() ?? 0) + 1,
+      }),
+    ).rejects.toThrow(ProductionDaemonConfigError);
+
+    // With the correct policy the same fixture is accepted.
+    await expect(
+      validateProductionDaemonFilesystem(validatedConfig(root), TEST_POLICY),
+    ).resolves.toBeDefined();
+  });
+
+  it("refuses a credential inside a group/other-writable parent directory", async () => {
+    const root = tempRoot();
+    provision(root);
+    const credDir = join(root, "creds");
+    mkdirSync(credDir, { mode: 0o700 });
+    const credentialPath = join(credDir, "service-account.json");
+    writeFileSync(credentialPath, "{}\n", { mode: 0o640 });
+    chmodSync(credentialPath, 0o640);
+    chmodSync(credDir, 0o777);
+    const config: PlayOpsConfig = {
+      ...daemonConfig(root),
+      googlePlay: { packageName: PACKAGE, serviceAccountJson: credentialPath },
+    };
+    const validated = validateProductionDaemonConfig(
+      config,
+      join(root, "playops.yaml"),
+      TEST_POLICY,
+    );
+    await expect(validateProductionDaemonFilesystem(validated, TEST_POLICY)).rejects.toThrow(
+      ProductionDaemonConfigError,
+    );
+    chmodSync(credDir, 0o700);
   });
 });

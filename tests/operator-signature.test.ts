@@ -18,8 +18,10 @@ import {
   createOperatorApprovalVerifier,
   createProductionOperatorVerifier,
   encodeOperatorApprovalPayload,
+  readPinnedProductionAnchor,
   type OperatorApprovalPayload,
 } from "../src/runtime/approvals/operator-signature.js";
+import { FsTrustError, type FsTrustMetadata, type FsTrustPort } from "../src/shared/fs-trust.js";
 
 const DIGEST = "a".repeat(64);
 
@@ -221,7 +223,222 @@ describe("operator trust anchor has no override", () => {
         "createOperatorApprovalVerifier",
         "createProductionOperatorVerifier",
         "encodeOperatorApprovalPayload",
+        "readPinnedProductionAnchor",
       ].sort(),
+    );
+  });
+});
+
+const ANCHOR_PATH = "/etc/playops/operator-approval.pub";
+const ANCHOR_PARENT = "/etc/playops";
+
+interface AnchorNode {
+  readonly meta: FsTrustMetadata;
+  readonly content: string;
+}
+
+function fileMeta(overrides: Partial<FsTrustMetadata> = {}): FsTrustMetadata {
+  return {
+    uid: 0,
+    gid: 0,
+    mode: 0o100644,
+    size: 0,
+    isFile: true,
+    isDirectory: false,
+    isSymbolicLink: false,
+    ...overrides,
+  };
+}
+
+function dirMeta(overrides: Partial<FsTrustMetadata> = {}): FsTrustMetadata {
+  return {
+    uid: 0,
+    gid: 0,
+    mode: 0o40755,
+    size: 0,
+    isFile: false,
+    isDirectory: true,
+    isSymbolicLink: false,
+    ...overrides,
+  };
+}
+
+/** A fake filesystem anchored at the (immutable) production anchor path. */
+function anchorPort(leaf: AnchorNode, parent: AnchorNode | undefined): FsTrustPort {
+  const nodes = new Map<string, AnchorNode>([[ANCHOR_PATH, leaf]]);
+  if (parent !== undefined) nodes.set(ANCHOR_PARENT, parent);
+  const open = new Map<number, AnchorNode>();
+  let nextFd = 7;
+  const openNode = (path: string): number => {
+    const node = nodes.get(path);
+    if (node === undefined) throw new FsTrustError("TRUST_UNREADABLE", `fake: missing ${path}`);
+    if (node.meta.isSymbolicLink) throw new FsTrustError("TRUST_PATH_UNSAFE", `fake: symlink`);
+    const fd = nextFd;
+    nextFd += 1;
+    open.set(fd, node);
+    return fd;
+  };
+  return {
+    lstat: (path) => nodes.get(path)?.meta,
+    openReadNoFollow: (path) => openNode(path),
+    openDirectoryNoFollow: (path) => openNode(path),
+    fstat: (fd) => {
+      const node = open.get(fd);
+      if (node === undefined) throw new FsTrustError("TRUST_UNREADABLE", "fake: bad fd");
+      return node.meta;
+    },
+    readAll: (fd, limit) => Buffer.from(open.get(fd)?.content ?? "", "utf8").subarray(0, limit + 1),
+    close: (fd) => {
+      open.delete(fd);
+    },
+  };
+}
+
+function expectAnchorError(fn: () => unknown, code: string): void {
+  try {
+    fn();
+    throw new Error("expected an anchor rejection");
+  } catch (cause) {
+    expect(cause).toBeInstanceOf(OperatorApprovalError);
+    expect((cause as OperatorApprovalError).code).toBe(code);
+  }
+}
+
+describe("operator trust anchor hardening (Stage 4C.1)", () => {
+  const pair = generateKeyPairSync("ed25519");
+  const pem = pair.publicKey.export({ type: "spki", format: "pem" }).toString();
+
+  function securePort(
+    leafOverrides: Partial<FsTrustMetadata> = {},
+    parentOverrides: Partial<FsTrustMetadata> = {},
+    parent = true,
+  ): FsTrustPort {
+    return anchorPort(
+      { meta: fileMeta({ size: Buffer.byteLength(pem), ...leafOverrides }), content: pem },
+      parent ? { meta: dirMeta(parentOverrides), content: "" } : undefined,
+    );
+  }
+
+  it("accepts a secure root-owned anchor fixture and verifies a genuine signature", () => {
+    const key = readPinnedProductionAnchor({
+      port: securePort(),
+      policy: { trustedOwnerUid: 0 },
+    });
+    expect(key.asymmetricKeyType).toBe("ed25519");
+    const verifier = createOperatorApprovalVerifier(key, "stage-4c1-seam");
+    const payload = fixturePayload();
+    const signature = sign(null, encodeOperatorApprovalPayload(payload), pair.privateKey).toString(
+      "base64url",
+    );
+    expect(verifier.verify(payload, signature)).toBe(true);
+  });
+
+  it("refuses a symlinked, directory, wrong-owner or writable anchor leaf", () => {
+    expectAnchorError(
+      () =>
+        readPinnedProductionAnchor({
+          port: anchorPort(
+            { meta: fileMeta({ isSymbolicLink: true }), content: pem },
+            { meta: dirMeta(), content: "" },
+          ),
+          policy: { trustedOwnerUid: 0 },
+        }),
+      "ANCHOR_UNREADABLE",
+    );
+    expectAnchorError(
+      () =>
+        readPinnedProductionAnchor({
+          port: anchorPort(
+            { meta: fileMeta({ isFile: false, isDirectory: true }), content: pem },
+            { meta: dirMeta(), content: "" },
+          ),
+          policy: { trustedOwnerUid: 0 },
+        }),
+      "ANCHOR_UNREADABLE",
+    );
+    expectAnchorError(
+      () =>
+        readPinnedProductionAnchor({
+          port: securePort({ uid: 1000 }),
+          policy: { trustedOwnerUid: 0 },
+        }),
+      "ANCHOR_UNREADABLE",
+    );
+    expectAnchorError(
+      () =>
+        readPinnedProductionAnchor({
+          port: securePort({ mode: 0o100662 }),
+          policy: { trustedOwnerUid: 0 },
+        }),
+      "ANCHOR_UNREADABLE",
+    );
+    expectAnchorError(
+      () =>
+        readPinnedProductionAnchor({
+          port: securePort({ mode: 0o100642 }),
+          policy: { trustedOwnerUid: 0 },
+        }),
+      "ANCHOR_UNREADABLE",
+    );
+  });
+
+  it("refuses an insecure anchor parent directory", () => {
+    expectAnchorError(
+      () =>
+        readPinnedProductionAnchor({
+          port: securePort({}, { mode: 0o40777 }),
+          policy: { trustedOwnerUid: 0 },
+        }),
+      "ANCHOR_UNREADABLE",
+    );
+    expectAnchorError(
+      () =>
+        readPinnedProductionAnchor({
+          port: securePort({}, { uid: 1000 }),
+          policy: { trustedOwnerUid: 0 },
+        }),
+      "ANCHOR_UNREADABLE",
+    );
+    expectAnchorError(
+      () =>
+        readPinnedProductionAnchor({
+          port: anchorPort(
+            { meta: fileMeta({ size: Buffer.byteLength(pem) }), content: pem },
+            { meta: { ...dirMeta(), isDirectory: false, isSymbolicLink: true }, content: "" },
+          ),
+          policy: { trustedOwnerUid: 0 },
+        }),
+      "ANCHOR_UNREADABLE",
+    );
+  });
+
+  it("still refuses a malformed or non-Ed25519 key with ANCHOR_INVALID", () => {
+    // Replace the content with an RSA public key: the reader must reach the key
+    // parse and fail with ANCHOR_INVALID.
+    const rsa = generateKeyPairSync("rsa", { modulusLength: 2048 })
+      .publicKey.export({ type: "spki", format: "pem" })
+      .toString();
+    expectAnchorError(
+      () =>
+        readPinnedProductionAnchor({
+          port: anchorPort(
+            { meta: fileMeta({ size: Buffer.byteLength(rsa) }), content: rsa },
+            { meta: dirMeta(), content: "" },
+          ),
+          policy: { trustedOwnerUid: 0 },
+        }),
+      "ANCHOR_INVALID",
+    );
+    expectAnchorError(
+      () =>
+        readPinnedProductionAnchor({
+          port: anchorPort(
+            { meta: fileMeta(), content: "not a key" },
+            { meta: dirMeta(), content: "" },
+          ),
+          policy: { trustedOwnerUid: 0 },
+        }),
+      "ANCHOR_INVALID",
     );
   });
 });

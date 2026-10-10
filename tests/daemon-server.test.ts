@@ -153,6 +153,8 @@ interface HarnessOptions {
   readonly createEditDelayMs?: number;
   readonly socketDirMode?: number;
   readonly requestTimeoutMs?: number;
+  readonly socketMode?: number;
+  readonly expectedSocketOwnership?: { readonly uid: number; readonly gid: number };
 }
 
 async function buildServerHarness(options: HarnessOptions = {}): Promise<ServerHarness> {
@@ -194,6 +196,10 @@ async function buildServerHarness(options: HarnessOptions = {}): Promise<ServerH
 
   const server = createDaemonServer({
     socketPath,
+    ...(options.socketMode === undefined ? {} : { socketMode: options.socketMode }),
+    ...(options.expectedSocketOwnership === undefined
+      ? {}
+      : { expectedSocketOwnership: options.expectedSocketOwnership }),
     ...(options.requestTimeoutMs === undefined
       ? {}
       : { requestTimeoutMs: options.requestTimeoutMs }),
@@ -528,5 +534,67 @@ describe("daemon server: bounded reads and lifecycle", () => {
     const result = await harness.send([harness.frame({ kind: "status" })]);
     expect(result.response).toBeUndefined();
     expect(harness.dispatchedKinds).toEqual(["prepare_open_edit"]);
+  });
+});
+
+describe("daemon server: socket mode allow-list and ownership (Stage 4C.1)", () => {
+  const euid = process.geteuid?.() ?? process.getuid?.() ?? 0;
+  const egid = process.getegid?.() ?? process.getgid?.() ?? 0;
+
+  it("accepts exactly 0600 and 0660 and binds with that exact mode", async () => {
+    for (const mode of [0o600, 0o660] as const) {
+      const harness = await buildServerHarness({ socketMode: mode });
+      const stat = lstatSync(harness.socketPath);
+      expect(stat.isSocket()).toBe(true);
+      expect(stat.mode & 0o777).toBe(mode);
+      await harness.close();
+    }
+  });
+
+  it("rejects every other mode value, naming the allow-list", () => {
+    const dir = tempDir();
+    const rejected: readonly number[] = [
+      0o000,
+      0o640,
+      0o666,
+      0o670,
+      0o770,
+      0o777,
+      0o1000,
+      -1,
+      1.5,
+      Number.NaN,
+    ];
+    for (const mode of rejected) {
+      expect(() =>
+        createDaemonServer({
+          socketPath: join(dir, "rejected.sock"),
+          socketMode: mode,
+          handle: async () => {
+            throw new Error("never dispatched");
+          },
+        }),
+      ).toThrow(/0600 or 0660/u);
+    }
+  });
+
+  it("verifies the bound socket ownership through the module-API seam", async () => {
+    const accepted = await buildServerHarness({
+      expectedSocketOwnership: { uid: euid, gid: egid },
+    });
+    expect(lstatSync(accepted.socketPath).isSocket()).toBe(true);
+    await accepted.close();
+
+    const wrongUid = await buildServerHarness({
+      deferStart: true,
+      expectedSocketOwnership: { uid: euid + 1, gid: egid },
+    });
+    await expect(wrongUid.start()).rejects.toThrow(/owned by the daemon/u);
+
+    const wrongGid = await buildServerHarness({
+      deferStart: true,
+      expectedSocketOwnership: { uid: euid, gid: egid + 1 },
+    });
+    await expect(wrongGid.start()).rejects.toThrow(/owned by the daemon/u);
   });
 });

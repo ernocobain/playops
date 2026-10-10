@@ -21,7 +21,9 @@
     "docs/audit-log.md",
     "docs/release-pipeline.md",
     "docs/release-process.md",
-    "docs/operator-client.md"
+    "docs/operator-client.md",
+    "docs/deployment-production.md",
+    "deploy/**"
   ],
   "scripts": {
     "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.json",

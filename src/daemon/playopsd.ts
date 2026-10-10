@@ -67,8 +67,9 @@ Options:
 Configuration, not flags, supplies the credential path, the Google Play package,
 the durable state roots and the socket path. The operator trust anchor is the
 fixed production path /etc/playops/operator-approval.pub and is not overridable.
-Startup performs no Google API call. The socket is owner-only (0600): a separate
-operator Unix user cannot connect in this stage.`;
+Startup performs no Google API call. The socket mode is restricted to {0600, 0660}:
+0600 is owner-only (tests/dev); 0660 is the production capability-group mode in
+which one small, admin-managed group may connect.`;
 
 export type PlayopsdArguments =
   | { readonly kind: "help" }

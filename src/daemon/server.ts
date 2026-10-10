@@ -54,8 +54,21 @@ import {
   type DaemonResponseEnvelope,
 } from "./protocol.js";
 
-/** Default socket file mode after bind. Production Stage 6 may use 0660 + group. */
+/** Default socket file mode after bind (owner-only; tests and development). */
 export const DEFAULT_DAEMON_SOCKET_MODE = 0o600;
+/**
+ * Stage 4C.1 — the ONLY socket modes the daemon accepts.
+ *
+ * `0600` is owner-only (tests/dev); `0660` is the production capability-group
+ * mode in which exactly one deliberately small, admin-managed group may
+ * connect. Every other value is refused: there is deliberately no generic
+ * "group bits are fine" rule, only exact membership.
+ */
+export const DAEMON_SOCKET_MODES = Object.freeze([0o600, 0o660] as const);
+/** Exact-membership predicate (never a bit-mask). */
+export function isAllowedDaemonSocketMode(mode: number): boolean {
+  return Number.isInteger(mode) && DAEMON_SOCKET_MODES.some((allowed) => allowed === mode);
+}
 /** Default bounded request/read timeout. */
 export const DEFAULT_DAEMON_REQUEST_TIMEOUT_MS = 5_000;
 /** Correlation id used for transport-level errors, before an envelope exists. */
@@ -66,6 +79,7 @@ export type DaemonServerErrorCode =
   | "DAEMON_SOCKET_PARENT_INVALID"
   | "DAEMON_SOCKET_PARENT_INSECURE"
   | "DAEMON_SOCKET_MODE_INVALID"
+  | "DAEMON_SOCKET_OWNERSHIP_INVALID"
   | "DAEMON_SERVER_ALREADY_STARTED"
   | "DAEMON_SERVER_NOT_STARTED";
 
@@ -93,6 +107,13 @@ export interface DaemonServerOptions {
   /** Applied after bind and verified. Never rely on Node's default. */
   readonly socketMode?: number;
   readonly requestTimeoutMs?: number;
+  /**
+   * Stage 4C.1 — the uid/gid the bound socket must have. Defaults to the real
+   * `process.geteuid()`/`process.getegid()`. This narrow module-API seam lets
+   * tests prove the rejection paths without `chown`; it is never reachable from
+   * the CLI, the environment or the configuration file.
+   */
+  readonly expectedSocketOwnership?: { readonly uid: number; readonly gid: number };
   readonly diagnosticSink?: (event: DaemonServerDiagnostic) => void;
 }
 
@@ -111,6 +132,19 @@ export interface DaemonServer {
 
 function isErrno(cause: unknown, code: string): boolean {
   return typeof cause === "object" && cause !== null && (cause as { code?: unknown }).code === code;
+}
+
+/**
+ * The daemon's effective uid/gid, or `undefined` when the platform does not
+ * expose `process.geteuid`/`process.getegid` (in which case the post-bind
+ * ownership comparison is skipped and NOT claimed as verified).
+ */
+function defaultSocketOwnership(): { uid: number; gid: number } | undefined {
+  const platform = process as { geteuid?: () => number; getegid?: () => number };
+  const geteuid = platform.geteuid;
+  const getegid = platform.getegid;
+  if (typeof geteuid !== "function" || typeof getegid !== "function") return undefined;
+  return { uid: geteuid(), gid: getegid() };
 }
 
 /** A response that is guaranteed to serialize: no summary, no approval, no error. */
@@ -160,11 +194,13 @@ export function createDaemonServer(options: DaemonServerOptions): DaemonServer {
   if (typeof socketPath !== "string" || socketPath.length === 0) {
     throw new DaemonServerError("DAEMON_SOCKET_PARENT_INVALID", "A socket path is required.");
   }
-  if (!Number.isInteger(socketMode) || socketMode <= 0 || (socketMode & 0o077) !== 0) {
-    // Stage 3B requires a socket that is not reachable by group/other.
+  if (!isAllowedDaemonSocketMode(socketMode)) {
+    // Stage 4C.1: an exact allow-list replaces the old "no group/other bits"
+    // rule. `0600` (owner-only) and `0660` (one production capability group)
+    // are the only accepted values.
     throw new DaemonServerError(
       "DAEMON_SOCKET_MODE_INVALID",
-      "Socket mode must be a restrictive owner-only mode.",
+      "Socket mode is not allowed; the allow-list is exactly 0600 or 0660.",
     );
   }
   if (!Number.isInteger(requestTimeoutMs) || requestTimeoutMs <= 0) {
@@ -408,6 +444,19 @@ export function createDaemonServer(options: DaemonServerOptions): DaemonServer {
         throw new DaemonServerError(
           "DAEMON_SOCKET_MODE_INVALID",
           "The bound socket did not have the required file type and mode.",
+        );
+      }
+      // Stage 4C.1: the bound inode must be owned by the daemon's effective
+      // uid/gid. Node exposes no `SO_PEERCRED`, so this ownership check is the
+      // strongest transport-level guarantee available here.
+      const expectedOwnership = options.expectedSocketOwnership ?? defaultSocketOwnership();
+      if (
+        expectedOwnership !== undefined &&
+        (bound.uid !== expectedOwnership.uid || bound.gid !== expectedOwnership.gid)
+      ) {
+        throw new DaemonServerError(
+          "DAEMON_SOCKET_OWNERSHIP_INVALID",
+          "The bound socket is not owned by the daemon's effective uid/gid.",
         );
       }
     },

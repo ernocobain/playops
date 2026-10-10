@@ -87,9 +87,16 @@ import {
 } from "./package-operation-singleflight.js";
 import { createFilePendingOperationStore, type PendingOperationStore } from "./pending-store.js";
 import type { DaemonRequestEnvelope } from "./protocol.js";
+import {
+  assertTrustedRegularFile,
+  FsTrustError,
+  readTrustedRegularFile,
+  secretServiceFilePolicy,
+  type FsTrustPolicy,
+} from "../shared/fs-trust.js";
 
-/** The owner-only socket contract supported by the released core. */
-export const PRODUCTION_DAEMON_SOCKET_MODE = 0o600;
+/** The production socket contract: `0660` with one capability group. */
+export const PRODUCTION_DAEMON_SOCKET_MODE = 0o660;
 /** The served-operation count this composition insists on wiring. */
 export const PRODUCTION_DAEMON_SERVED_OPERATION_COUNT = 10;
 
@@ -97,6 +104,7 @@ export type ProductionDaemonConfigErrorCode =
   | "DAEMON_CONFIG_PATH_MISSING"
   | "DAEMON_CONFIG_PATH_NOT_ABSOLUTE"
   | "DAEMON_CONFIG_INVALID"
+  | "DAEMON_CONFIG_FILE_UNSAFE"
   | "DAEMON_PATH_NOT_ABSOLUTE"
   | "DAEMON_PATH_INVALID"
   | "DAEMON_STATE_DIRECTORY_UNSAFE"
@@ -179,6 +187,7 @@ function assertAbsoluteSafePath(field: string, value: unknown): string {
 export function validateProductionDaemonConfig(
   config: PlayOpsConfig,
   configPath: unknown,
+  trustPolicy: FsTrustPolicy = {},
 ): ValidatedProductionDaemonConfig {
   const resolvedConfigPath = assertAbsoluteSafePath("--config", configPath);
   let packageName: string;
@@ -192,7 +201,7 @@ export function validateProductionDaemonConfig(
     );
   }
   const daemon = config.daemon;
-  return Object.freeze({
+  const validated: ValidatedProductionDaemonConfig = {
     configPath: resolvedConfigPath,
     packageName,
     credentialPath: assertAbsoluteSafePath(
@@ -220,7 +229,29 @@ export function validateProductionDaemonConfig(
       "daemon.write_intent_store_path",
       daemon.writeIntentStorePath,
     ),
-  });
+  };
+  // Stage 4C.1A: the configuration file names every security-sensitive path, so
+  // it is integrity-checked before any parsed value is used. As a secret-bearing
+  // production input it is checked with the SECRET-SERVICE policy: a regular
+  // file, not a symlink, owned by the trusted uid (root by default), never
+  // group/other-writable and never other-readable/writable/executable, an exact
+  // mode of 0640/0440, inside a trusted non-writable parent directory whose group
+  // is the trusted secret group and is not the process effective gid. The policy
+  // seam is reachable only from the composition entry; it is never sourced from
+  // the CLI, the environment or the file itself.
+  try {
+    readTrustedRegularFile(resolvedConfigPath, { policy: secretServiceFilePolicy(trustPolicy) });
+  } catch (cause) {
+    if (cause instanceof FsTrustError) {
+      throw fail(
+        "DAEMON_CONFIG_FILE_UNSAFE",
+        "The daemon configuration file failed its integrity check.",
+        resolvedConfigPath,
+      );
+    }
+    throw cause;
+  }
+  return Object.freeze(validated);
 }
 
 export interface ProductionDaemonFilesystemReport {
@@ -345,6 +376,7 @@ async function assertExistingStateFile(field: string, path: string): Promise<boo
  */
 export async function validateProductionDaemonFilesystem(
   validated: ValidatedProductionDaemonConfig,
+  trustPolicy: FsTrustPolicy = {},
 ): Promise<ProductionDaemonFilesystemReport> {
   await assertPrivateStateDirectory("daemon.pending_store_path", validated.pendingStorePath);
   await assertPrivateStateDirectory("daemon.claim_root", validated.claimRoot);
@@ -375,15 +407,26 @@ export async function validateProductionDaemonFilesystem(
   await assertGuardedDirectory("audit.log_path", auditParent);
   const auditExisted = await assertExistingStateFile("audit.log_path", validated.auditLogPath);
 
-  // Credential: a real, non-symlink regular file. Content validation (JSON +
-  // service-account shape) belongs to the existing credential loader.
-  const credential = await statPath(validated.credentialPath);
-  if (credential === undefined || credential.isSymbolicLink() || !credential.isFile()) {
-    throw fail(
-      "DAEMON_CREDENTIAL_PATH_UNSAFE",
-      "google_play.service_account_json must be an existing regular file, not a symlink.",
-      validated.credentialPath,
-    );
+  // Credential: a real, non-symlink regular file, owned by the trusted uid
+  // (root by default), never group/other-writable and never other-readable/
+  // writable/executable, an exact mode of 0640/0440, inside a trusted
+  // non-writable parent directory whose group is the trusted secret group and is
+  // not the process effective gid (Stage 4C.1A SECRET-SERVICE policy). Content
+  // validation (JSON + service-account shape) still belongs to the existing
+  // credential loader.
+  try {
+    await assertTrustedRegularFile(validated.credentialPath, {
+      policy: secretServiceFilePolicy(trustPolicy),
+    });
+  } catch (cause) {
+    if (cause instanceof FsTrustError) {
+      throw fail(
+        "DAEMON_CREDENTIAL_PATH_UNSAFE",
+        "google_play.service_account_json failed its integrity check.",
+        validated.credentialPath,
+      );
+    }
+    throw cause;
   }
   try {
     await access(validated.credentialPath, fsConstants.R_OK);
@@ -457,15 +500,25 @@ export async function createProductionDaemonApplication(options: {
   readonly factories?: ProductionDaemonFactories;
   readonly now?: () => Date;
   readonly diagnostics?: DaemonDiagnosticSink;
+  /**
+   * Stage 4C.1/4C.1A module-API seam applied to the config file and the
+   * credential through the SECRET-SERVICE policy. Production always uses the
+   * default (root-owned, no group/other write, no other read/write/execute, exact
+   * 0640/0440, real process group identity); tests inject a non-root uid and a
+   * process group identity so an unprivileged fixture can be accepted. It is
+   * never sourced from the CLI, environment or configuration.
+   */
+  readonly trustPolicy?: FsTrustPolicy;
 }): Promise<ProductionDaemonApplication> {
   const factories = options.factories ?? {};
+  const trustPolicy = options.trustPolicy ?? {};
   const configPath = assertAbsoluteSafePath("--config", options.configPath);
   const config = (factories.loadConfig ?? loadConfig)({
     configPath,
     ...(options.env === undefined ? {} : { env: options.env }),
   });
-  const validated = validateProductionDaemonConfig(config, configPath);
-  const filesystem = await validateProductionDaemonFilesystem(validated);
+  const validated = validateProductionDaemonConfig(config, configPath, trustPolicy);
+  const filesystem = await validateProductionDaemonFilesystem(validated, trustPolicy);
   // Eager, fail-closed trust anchor: a missing/malformed/ non-Ed25519 anchor must
   // stop startup before anything is served.
   const operatorVerifier = (factories.createVerifier ?? createProductionOperatorVerifier)();

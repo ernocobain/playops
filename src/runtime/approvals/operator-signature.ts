@@ -9,11 +9,18 @@
  * The production trust anchor is a source-level constant. There is deliberately
  * no way to override it through CLI arguments, environment variables,
  * playops.yaml, request payloads, pending records, or the working directory:
- * the only exported entry point that resolves a key from disk is
- * `createProductionOperatorVerifier()`, which takes no arguments.
+ * the production entry point `createProductionOperatorVerifier()` takes no
+ * arguments and resolves the pinned path. `readPinnedProductionAnchor()` is
+ * exported only as a module-level injection seam (a filesystem port and a trust
+ * policy for tests); the pinned PATH itself remains a non-overridable constant.
  */
 import { createPublicKey, verify as nodeVerify, type KeyObject } from "node:crypto";
-import { readFileSync } from "node:fs";
+import {
+  publicIntegrityFilePolicy,
+  readTrustedRegularFile,
+  type FsTrustPolicy,
+  type FsTrustPort,
+} from "../../shared/fs-trust.js";
 import { TOOL_PERMISSION_LEVELS, type ToolPermissionLevel } from "../tools/index.js";
 
 /** Domain separator mixed into every signed payload. Never change without a new domain. */
@@ -206,15 +213,32 @@ export function createOperatorApprovalVerifier(
 }
 
 /**
- * Read and resolve the pinned production anchor.
+ * Read and resolve the pinned production anchor through the shared fs-trust
+ * helper using the PUBLIC-INTEGRITY policy: the leaf is opened without following
+ * a symlink, `fstat`-validated as a regular file owned by uid 0 with no
+ * group/other write, and the parent `/etc/playops` is validated as a real
+ * non-symlink root-owned directory with no group/other write (via a directory
+ * descriptor when the platform supports it). The key bytes come from the
+ * validated descriptor. The pinned path is a constant and is NOT overridable;
+ * the only injection points are the helper's filesystem port and policy, which
+ * are unreachable from the CLI, the environment or the configuration.
  *
- * Module-private on purpose: no caller can supply a replacement path, and the
- * resulting key can only ever come from `PRODUCTION_OPERATOR_ANCHOR_PATH`.
+ * Anchor confidentiality is intentionally NOT required, so public classes such as
+ * `0644 root:root` are accepted (the anchor is public key material). The
+ * secret-service group-identity rules do not apply here.
  */
-function readPinnedProductionAnchor(): KeyObject {
+export interface ReadPinnedAnchorOptions {
+  readonly port?: FsTrustPort;
+  readonly policy?: FsTrustPolicy;
+}
+
+export function readPinnedProductionAnchor(options: ReadPinnedAnchorOptions = {}): KeyObject {
   let contents: string;
   try {
-    contents = readFileSync(PRODUCTION_OPERATOR_ANCHOR_PATH, "utf8");
+    contents = readTrustedRegularFile(PRODUCTION_OPERATOR_ANCHOR_PATH, {
+      policy: publicIntegrityFilePolicy(options.policy),
+      ...(options.port === undefined ? {} : { port: options.port }),
+    });
   } catch (cause) {
     throw new OperatorApprovalError(
       "ANCHOR_UNREADABLE",

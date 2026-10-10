@@ -51,6 +51,7 @@ describe("Phase 6.4 operator documentation", () => {
       "docs/release-pipeline.md",
       "docs/release-process.md",
       "docs/operator-client.md",
+      "docs/deployment-production.md",
     ]);
     expect(inspection.report.relativeLinks).toBeGreaterThan(0);
     expect(commands).toContain("playops --help");
