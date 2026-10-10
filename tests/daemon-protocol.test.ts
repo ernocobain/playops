@@ -4,6 +4,11 @@
  * Entirely offline; no socket, no daemon, no Google.
  */
 import { describe, expect, it } from "vitest";
+import {
+  createReleaseEditOpenStatement,
+  createReleaseEditOpenDigest,
+} from "../src/releases/open-tool.js";
+import { encodeOperatorApprovalPayload } from "../src/runtime/approvals/operator-signature.js";
 import type { PendingOperationStateName } from "../src/daemon/pending-store.js";
 import {
   DAEMON_REQUEST_KINDS,
@@ -88,10 +93,10 @@ describe("daemon protocol request parsing", () => {
     }
   });
 
-  it("accepts protocol version 4 and fails closed on v3, v2 and v5", () => {
-    expect(PLAYOPS_DAEMON_PROTOCOL_VERSION).toBe(4);
-    expect(parseDaemonRequest(envelope({ kind: "status" })).protocolVersion).toBe(4);
-    for (const version of [3, 2, 1, 5, 0]) {
+  it("accepts protocol version 5 and fails closed on v4, v3, v2 and v6", () => {
+    expect(PLAYOPS_DAEMON_PROTOCOL_VERSION).toBe(5);
+    expect(parseDaemonRequest(envelope({ kind: "status" })).protocolVersion).toBe(5);
+    for (const version of [4, 3, 2, 1, 6, 0]) {
       expect(errorCode(() => parseDaemonRequest(envelope({ kind: "status" }, version)))).toBe(
         "UNSUPPORTED_PROTOCOL_VERSION",
       );
@@ -342,6 +347,30 @@ describe("daemon protocol size bounds", () => {
   });
 });
 
+function openApprovalFixture() {
+  const payload = {
+    protocolVersion: 1,
+    requestId: REQUEST_ID,
+    nonce: "n".repeat(43),
+    toolName: "releases.open_edit",
+    permission: "destructive" as const,
+    packageName: "com.example.app",
+    requestDigest: createReleaseEditOpenDigest("com.example.app"),
+    expiresAtUtc: "2026-10-10T00:10:00.000Z",
+  };
+  return {
+    requestId: payload.requestId,
+    toolName: payload.toolName,
+    permission: payload.permission,
+    packageName: payload.packageName,
+    requestDigest: payload.requestDigest,
+    expiresAtUtc: payload.expiresAtUtc,
+    canonicalPayload: encodeOperatorApprovalPayload(payload).toString("utf8"),
+    approvalStatementVersion: 1 as const,
+    approvalStatementCanonical: createReleaseEditOpenStatement(payload.packageName),
+  };
+}
+
 describe("daemon protocol response model", () => {
   it("serializes a distinct outcome per materially different result", () => {
     const outcomes = [
@@ -367,6 +396,7 @@ describe("daemon protocol response model", () => {
         protocolVersion: PLAYOPS_DAEMON_PROTOCOL_VERSION,
         correlationId: CORRELATION,
         outcome,
+        ...(outcome === "approval_required" ? { approval: openApprovalFixture() } : {}),
       });
       const parsed = parseDaemonResponse(JSON.parse(bytes.toString("utf8")) as unknown);
       expect(parsed.outcome).toBe(outcome);

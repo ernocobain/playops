@@ -305,8 +305,8 @@ describe("daemon server: status over the socket", () => {
     const response = await harness.call({ kind: "status" });
 
     expect(response.outcome).toBe("status");
-    expect(response.protocolVersion).toBe(4);
-    expect(response.summary).toContain("protocolVersion=4");
+    expect(response.protocolVersion).toBe(5);
+    expect(response.summary).toContain("protocolVersion=5");
     expect(response.summary).toContain(`configuredPackage=${PACKAGE}`);
     expect(harness.dispatchedKinds).toEqual(["status"]);
     expect(harness.createEdit).not.toHaveBeenCalled();

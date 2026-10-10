@@ -904,6 +904,36 @@ await record("v0.3 approval, signature and durable authority modules import from
     claims.releaseRequestClaim, writeIntent.createFileReleaseWriteIntentStore,
     execution.executeOneTool].every((entry) => typeof entry === "function");
 });
+await record("installed v5 approval modules expose canonical statement preimages and reject v4", async () => {
+  const {createHash} = await import("node:crypto");
+  const canonical = await import("playops/dist/approvals/canonical-json.js");
+  const statement = await import("playops/dist/approvals/statement.js");
+  const challenge = await import("playops/dist/approvals/challenge.js");
+  const protocol = await import("playops/dist/daemon/protocol.js");
+  const view = await import("playops/dist/daemon/pending-view.js");
+  const open = await import("playops/dist/releases/open-tool.js");
+  const commit = await import("playops/dist/releases/commit-approval.js");
+  const verify = await import("playops/dist/releases/readback-approval.js");
+  const reconcile = await import("playops/dist/releases/reconcile-commit-tool.js");
+  const packageName = "com.example.installedstatements";
+  const track = {track:"internal",releases:[{name:"Installed Candidate",status:"completed",versionCodes:["42"],releaseNotes:[{language:"en-US",text:"Installed 東京\\nNote"}]}]};
+  const intent = commit.createReleaseCommitIntent({packageName,editId:"installed-original",targetTrack:"internal",versionCode:"42",targetTrackState:track,validatedEdit:{valid:true,expiryTimeSeconds:"4102444800"}});
+  const verification = verify.createReleaseStateVerificationIntent({packageName,targetTrack:"internal",versionCode:"42",expectedReleaseName:intent.releaseName,expectedStateDigest:intent.stateDigest});
+  const candidate = {version:1,attemptId:"11111111-2222-4333-8444-555555555555",packageName,editId:"installed-original",expiryTimeSeconds:"4102444800",targetTrack:"internal",versionCode:"42",releaseName:intent.releaseName,releaseStatus:"completed",expectedStateDigest:intent.stateDigest,validationExpiryTimeSeconds:"4102444800",requestDigest:intent.requestDigest,attemptedAtUtc:"2026-10-10T00:00:00.000Z",updatedAtUtc:"2026-10-10T00:00:00.000Z",state:"TRANSPORT_ATTEMPTED"};
+  const statements = [open.createReleaseEditOpenStatement(packageName),commit.createReleaseCommitStatement(intent),verify.createReleaseStateVerificationStatement(verification),reconcile.createReleaseCommitReconciliationStatement(packageName,candidate,"verify_expired")];
+  for (const text of statements) {
+    const parsed = statement.parseApprovalStatementCanonical(text);
+    const digest = createHash("sha256").update(text,"utf8").digest("hex");
+    if (statement.approvalStatementDigest(text) !== digest) return false;
+    const approval = view.approvalChallengeFor({requestId:candidate.attemptId,nonce:"n".repeat(43),toolName:parsed.toolName,permission:parsed.permission,packageName,requestDigest:digest,expiresAtUtc:"2026-10-10T00:10:00.000Z"},text);
+    challenge.assertApprovalChallenge(approval);
+    const response = protocol.parseDaemonResponse(JSON.parse(protocol.serializeDaemonResponse({protocolVersion:5,correlationId:"installed_semantics",outcome:"approval_required",approval}).toString("utf8")));
+    if (response.approval.approvalStatementCanonical !== text || challenge.decodeApprovalPayload(approval.canonicalPayload).nonce !== "n".repeat(43)) return false;
+  }
+  let refused = false;
+  try { protocol.parseDaemonRequest({protocolVersion:4,correlationId:"old",request:{kind:"status"}}); } catch (error) {refused = error.code === "UNSUPPORTED_PROTOCOL_VERSION";}
+  return refused && statements.length === 4 && canonical.stableStringify({b:2,a:1}) === '{"a":1,"b":2}';
+});
 await record("installed daemon protocol and served operation map retain the frozen contracts", async () => {
   const protocol = await import("playops/dist/daemon/protocol.js");
   const operations = await import("playops/dist/daemon/operations.js");
@@ -912,11 +942,11 @@ await record("installed daemon protocol and served operation map retain the froz
   const signature = await import("playops/dist/runtime/approvals/operator-signature.js");
   const writeIntent = await import("playops/dist/releases/release-write-intent-store.js");
   const reconcile = await import("playops/dist/daemon/reconcile-commit-operations.js");
-  const request = protocol.parseDaemonRequest({ protocolVersion: 4, correlationId: "installed_package_smoke", request: { kind: "status" } });
+  const request = protocol.parseDaemonRequest({ protocolVersion: 5, correlationId: "installed_package_smoke", request: { kind: "status" } });
   const expected = ["status", "prepare_open_edit", "execute_open_edit", "attach_notes",
     "prepare_commit", "execute_commit", "prepare_verify_committed", "execute_verify_committed",
     "prepare_reconcile_commit", "execute_reconcile_commit"];
-  return protocol.PLAYOPS_DAEMON_PROTOCOL_VERSION === 4 && request.request.kind === "status" &&
+  return protocol.PLAYOPS_DAEMON_PROTOCOL_VERSION === 5 && request.request.kind === "status" &&
     JSON.stringify(operations.DAEMON_SERVED_OPERATIONS) === JSON.stringify(expected) &&
     pending.PENDING_RECORD_SCHEMA_VERSION === 2 && claims.REQUEST_CLAIM_SCHEMA_VERSION === 1 &&
     signature.OPERATOR_APPROVAL_PROTOCOL_VERSION === 1 && writeIntent.RELEASE_WRITE_INTENT_SCHEMA_VERSION === 1 &&

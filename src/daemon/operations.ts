@@ -30,6 +30,7 @@
  * The claim is retained on every path except confirmed success: retaining a
  * claim can never cause a second remote mutation, while releasing it can.
  */
+import { createReleaseEditOpenStatement } from "../releases/open-tool.js";
 import { executeOneTool } from "../runtime/agent/execute-one-tool.js";
 import type { AgentLedger, AgentToolBinding } from "../runtime/agent/index.js";
 import type { ApprovalLedger } from "../runtime/approvals/index.js";
@@ -49,6 +50,7 @@ import {
 import {
   approvalChallengeFor,
   approvalPayloadFor,
+  preflightApprovalResponse,
   envelope as response,
   outcomeForNonPendingState,
 } from "./pending-view.js";
@@ -325,6 +327,14 @@ export function createDaemonOperations(deps: DaemonOperationDependencies): Daemo
   const openSummary = approvalHook.createSafeSummary(deps.openEdit.input);
 
   async function prepareOpenEdit(correlationId: string): Promise<DaemonResponseEnvelope> {
+    const statement = createReleaseEditOpenStatement(deps.packageName);
+    const refused = preflightApprovalResponse(correlationId, openSummary, statement, {
+      toolName: openBinding.toolName,
+      permission: openPermission,
+      packageName: deps.packageName,
+      requestDigest: openDigest,
+    });
+    if (refused) return refused;
     let record: PendingOperationRecord;
     try {
       record = await deps.pendingStore.prepare({
@@ -349,7 +359,7 @@ export function createDaemonOperations(deps: DaemonOperationDependencies): Daemo
     }
     return response(correlationId, "approval_required", {
       summary: openSummary,
-      approval: approvalChallengeFor(record),
+      approval: approvalChallengeFor(record, statement),
     });
   }
 
@@ -384,6 +394,14 @@ export function createDaemonOperations(deps: DaemonOperationDependencies): Daemo
         },
       });
     }
+    // Schema2 does not store a statement; old opaque digests must never claim or consume.
+    if (record.requestDigest !== openDigest)
+      return response(correlationId, "approval_mismatch", {
+        error: {
+          code: "APPROVAL_STATEMENT_REQUIRED",
+          message: "A new human-verifiable approval statement and signature are required.",
+        },
+      });
     const payload = approvalPayloadFor(record);
     if (!deps.operatorVerifier.verify(payload, signature)) {
       return response(correlationId, "approval_mismatch", {

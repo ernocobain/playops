@@ -8,6 +8,11 @@
  * Uses the existing single-operator store contract, not distributed locking/CAS.
  */
 import { createHash } from "node:crypto";
+import {
+  APPROVAL_CONSEQUENCES,
+  approvalStatementDigest,
+  canonicalApprovalStatement,
+} from "../approvals/statement.js";
 import type { NewAuditEntry } from "../audit/index.js";
 import type { AgentToolBinding } from "../runtime/agent/index.js";
 import type { ToolDefinition, ToolSchema } from "../runtime/tools/index.js";
@@ -110,7 +115,7 @@ function canonical(value: unknown): string {
       .join(",")}}`;
   return JSON.stringify(value);
 }
-export function createReleaseCommitReconciliationRequestDigest(
+function candidateFingerprint(
   packageName: string,
   candidate: ReleaseCommitAttemptJournalRecord,
   mode: ReleaseCommitReconciliationMode,
@@ -132,6 +137,70 @@ export function createReleaseCommitReconciliationRequestDigest(
     )
     .digest("hex");
 }
+export function createReleaseCommitReconciliationStatement(
+  packageName: string,
+  candidate: ReleaseCommitAttemptJournalRecord,
+  mode: ReleaseCommitReconciliationMode,
+): string {
+  const record = parseReleaseCommitAttemptJournalRecord(
+    candidate,
+    validateReleasePackageName(packageName),
+  );
+  const fingerprint = candidateFingerprint(packageName, record, mode);
+  const observed = record.verificationObservedStateDigest;
+  return canonicalApprovalStatement({
+    statementVersion: 1,
+    operation: "reconcile_commit",
+    toolName: RELEASES_RECONCILE_COMMIT_TOOL_NAME,
+    permission: mode === "probe" ? "read" : "destructive",
+    packageName,
+    facts: {
+      targetTrack: record.targetTrack,
+      versionCode: record.versionCode,
+      releaseName: record.releaseName,
+      releaseStatus: record.releaseStatus,
+      attemptId: record.attemptId,
+      attemptState: record.state,
+      mode,
+      originalEditStatus: "not_yet_probed",
+      commitAcknowledged: record.acknowledgedAtUtc !== undefined,
+      archivedNoteTextAvailable: false,
+      verificationInsertAttempted: record.verificationInsertAttempted === true,
+      temporaryEditIdentityAvailable:
+        record.verificationEditId !== undefined &&
+        record.verificationEditExpiryTimeSeconds !== undefined,
+      verificationPreDeleteReadVerified: record.verificationPreDeleteReadVerified === true,
+      verificationDeleteAttempted: record.verificationDeleteAttempted === true,
+      verificationDeleteAcknowledged: record.verificationDeleteAcknowledged === true,
+      verificationCleanupVerified: record.verificationCleanupVerified === true,
+      observedClassification:
+        observed === undefined
+          ? "not_observed"
+          : observed === record.expectedStateDigest
+            ? "expected_state"
+            : observed === record.priorStateDigest
+              ? "prior_state"
+              : "unrelated_state",
+    },
+    integrity: {
+      candidateFingerprint: fingerprint,
+      expectedStateDigest: record.expectedStateDigest,
+      priorStateDigest: record.priorStateDigest ?? null,
+      observedStateDigest: observed ?? null,
+    },
+    consequences: APPROVAL_CONSEQUENCES.reconcile_commit,
+  });
+}
+export function createReleaseCommitReconciliationRequestDigest(
+  packageName: string,
+  candidate: ReleaseCommitAttemptJournalRecord,
+  mode: ReleaseCommitReconciliationMode,
+): string {
+  return approvalStatementDigest(
+    createReleaseCommitReconciliationStatement(packageName, candidate, mode),
+  );
+}
+
 function parseResult(value: unknown): ReleaseCommitReconciliationResult {
   if (
     !object(value) ||
@@ -232,7 +301,16 @@ export function createReleaseCommitReconciliationTool(
   const packageName = validateReleasePackageName(options?.packageName);
   const candidate = parseReleaseCommitAttemptJournalRecord(options?.candidate, packageName);
   const mode = options?.mode;
-  const digest = createReleaseCommitReconciliationRequestDigest(packageName, candidate, mode);
+  const statementCanonical = createReleaseCommitReconciliationStatement(
+    packageName,
+    candidate,
+    mode,
+  );
+  const digest = approvalStatementDigest(statementCanonical);
+  const visible = JSON.parse(statementCanonical) as {
+    packageName: string;
+    facts: { attemptId: string };
+  };
   const { gateway, journal, sessionStore, auditLedger } = options;
   const clock = options.now ?? (() => new Date());
   if (
@@ -565,8 +643,8 @@ export function createReleaseCommitReconciliationTool(
         if (observed !== candidate.expectedStateDigest) {
           if (record.state === "TRANSPORT_ATTEMPTED") await transition("AMBIGUOUS");
           if (!(await cleanup())) return finish("CASE_3", "VERIFICATION_CLEANUP_PENDING");
-          // priorStateDigest is not approval-bound, so equal-as-prior is still
-          // reported as unresolved rather than as a certain "not committed".
+          // A prior-state match cannot prove this commit was never applied:
+          // intervening changes remain possible, so the outcome stays unresolved.
           return observed === candidate.priorStateDigest
             ? finish("CASE_3", "PRIOR_STATE_OBSERVED")
             : finish("CASE_3", "UNRELATED_STATE_OBSERVED");
@@ -613,7 +691,7 @@ export function createReleaseCommitReconciliationTool(
           approval: {
             createRequestDigest: () => digest,
             createSafeSummary: () =>
-              `DESTRUCTIVE verification of one expired commit attempt for ${packageName}. One temporary insert may invalidate other edits owned by this API user. Deletes only the exact verification edit once with retries disabled. Never deletes the original, never commits. Bound attempt: ${candidate.attemptId}.`,
+              `DESTRUCTIVE verification of one expired commit attempt for ${visible.packageName}. One temporary insert may invalidate other edits owned by this API user. Deletes only the exact verification edit once with retries disabled. Never deletes the original, never commits. Bound attempt: ${visible.facts.attemptId}.`,
           },
         }
       : {}),

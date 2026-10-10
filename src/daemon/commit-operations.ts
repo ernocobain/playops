@@ -49,6 +49,7 @@
  *      unresolved until the separate Stage-3E verification transition, so later
  *      commits for the same package remain blocked by the journal recheck.
  */
+import { isLegacyOpaqueApproval } from "../approvals/statement.js";
 import type { AgentLedger } from "../runtime/agent/index.js";
 import { executeOneTool } from "../runtime/agent/execute-one-tool.js";
 import type { ApprovalLedger } from "../runtime/approvals/index.js";
@@ -57,6 +58,7 @@ import { ToolRegistry } from "../runtime/tools/index.js";
 import type { VerificationLedger } from "../runtime/verification/index.js";
 import {
   createReleaseCommitIntent,
+  createReleaseCommitStatement,
   type ReleaseCommitApprovalBinding,
   type ReleaseCommitIntent,
 } from "../releases/commit-approval.js";
@@ -92,7 +94,12 @@ import {
   PACKAGE_OPERATION_BUSY_CODE,
   type PackageOperationCoordinator,
 } from "./package-operation-singleflight.js";
-import { approvalChallengeFor, approvalPayloadFor, envelope } from "./pending-view.js";
+import {
+  approvalChallengeFor,
+  approvalPayloadFor,
+  preflightApprovalResponse,
+  envelope,
+} from "./pending-view.js";
 import { outcomeForNonPendingState } from "./pending-view.js";
 import type {
   PendingCommitIntent,
@@ -460,6 +467,18 @@ export async function prepareCommit(
     );
   }
 
+  const refused = preflightApprovalResponse(
+    correlationId,
+    summary,
+    approval.approvalStatementCanonical,
+    {
+      toolName,
+      permission: approval.permission,
+      packageName: deps.packageName,
+      requestDigest: approval.createRequestDigest({}),
+    },
+  );
+  if (refused) return refused;
   let record: PendingOperationRecord;
   try {
     record = await deps.pendingStore.prepare({
@@ -484,7 +503,7 @@ export async function prepareCommit(
 
   return envelope(correlationId, "approval_required", {
     summary,
-    approval: approvalChallengeFor(record),
+    approval: approvalChallengeFor(record, approval.approvalStatementCanonical),
   });
 }
 
@@ -593,6 +612,13 @@ export async function executeCommit(
     if (!fresh.ok) {
       return failure(correlationId, "local_state_failure", fresh.code, fresh.message);
     }
+    if (isLegacyOpaqueApproval(record.requestDigest, createReleaseCommitStatement(fresh.intent)))
+      return failure(
+        correlationId,
+        "approval_mismatch",
+        "APPROVAL_STATEMENT_REQUIRED",
+        "A new human-verifiable approval statement and signature are required.",
+      );
     const drifted = intentDrift(approved, fresh.intent, record.requestDigest);
     if (drifted !== undefined) {
       // The approval is bound to the exact approved state. It must never

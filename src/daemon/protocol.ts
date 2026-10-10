@@ -15,6 +15,7 @@
  * validation is the control; duplicate-key rejection would require a streaming
  * JSON parser and is deliberately out of scope.
  */
+import { assertApprovalChallenge } from "../approvals/challenge.js";
 import type { ToolPermissionLevel } from "../runtime/tools/index.js";
 
 /**
@@ -32,6 +33,10 @@ import type { ToolPermissionLevel } from "../runtime/tools/index.js";
  * Bumped 3 -> 4 because the `attach_notes` request gains a semantic target
  * (`versionCode`) and the closed response vocabulary gains `operation_in_progress`.
  *
+ * Bumped 4 -> 5: required human-verifiable semantic approval statements replace
+ * opaque digest preimages. Older nested response parsing was permissive, so this
+ * cannot safely be an optional v4 extension. Signing V1 and pending schema2 stay.
+ *
  * There is no deployed production client or server, so no migration is required
  * and older versions fail closed through the existing unsupported-version path.
  * No compatibility fallback exists.
@@ -41,7 +46,7 @@ import type { ToolPermissionLevel } from "../runtime/tools/index.js";
  * approval-record contract and the release write-intent contract are three
  * separate version domains, and none is derived from another.
  */
-export const PLAYOPS_DAEMON_PROTOCOL_VERSION = 4;
+export const PLAYOPS_DAEMON_PROTOCOL_VERSION = 5;
 
 /** Maximum serialized request size accepted by the daemon, in bytes. */
 export const MAX_REQUEST_BYTES = 64 * 1024;
@@ -454,6 +459,9 @@ export interface DaemonApprovalChallenge {
   readonly expiresAtUtc: string;
   /** Exact canonical bytes the operator must sign (Stage 1 encoding). */
   readonly canonicalPayload: string;
+  readonly approvalStatementVersion: 1;
+  /** Exact UTF-8 digest preimage; the sibling summary is never authority. */
+  readonly approvalStatementCanonical: string;
 }
 
 export interface DaemonResponseEnvelope {
@@ -552,6 +560,27 @@ function assertNoSecretFields(value: unknown, trail = "response"): void {
 export function serializeDaemonResponse(response: DaemonResponseEnvelope): Buffer {
   assertNoSecretFields(response);
   assertSafeOutcomePayload(response);
+  if (response.protocolVersion !== PLAYOPS_DAEMON_PROTOCOL_VERSION)
+    throw new ProtocolError(
+      "UNSUPPORTED_PROTOCOL_VERSION",
+      "Daemon protocol version is not supported.",
+    );
+  if (response.outcome === "approval_required" || response.approval !== undefined) {
+    if (response.outcome !== "approval_required")
+      throw new ProtocolError(
+        "INVALID_FIELD",
+        "Approval challenge belongs only to approval_required.",
+      );
+    try {
+      assertApprovalChallenge(response.approval);
+    } catch (cause) {
+      throw new ProtocolError(
+        "INVALID_FIELD",
+        "Daemon approval statement or signed challenge is invalid.",
+        { cause },
+      );
+    }
+  }
   if (
     response.summary !== undefined &&
     typeof response.summary === "string" &&
@@ -635,6 +664,6 @@ export function parseDaemonResponse(value: unknown): DaemonResponseEnvelope {
   }
   assertNoSecretFields(value);
   const response = value as unknown as DaemonResponseEnvelope;
-  assertSafeOutcomePayload(response);
+  serializeDaemonResponse(response);
   return response;
 }

@@ -25,6 +25,7 @@
  * structural invariant. There is no first/last/newest/timestamp selection, and
  * an already-reconciled historical attempt is never re-opened.
  */
+import { isLegacyOpaqueApproval } from "../approvals/statement.js";
 import type { NewAuditEntry } from "../audit/index.js";
 import {
   parseReleaseCommitAttemptJournalRecord,
@@ -44,6 +45,7 @@ import { finalizeVerifiedCommit } from "../releases/finalize-verified-commit.js"
 import type { ReleaseEditCleanupJournal } from "../releases/cleanup-journal.js";
 import {
   createReleaseCommitReconciliationTool,
+  createReleaseCommitReconciliationStatement,
   RELEASES_RECONCILE_COMMIT_TOOL_NAME,
   type ReleaseCommitReconciliationMode,
   type ReleaseCommitReconciliationResult,
@@ -65,6 +67,7 @@ import type { PendingOperationRecord, PendingOperationStore } from "./pending-st
 import {
   approvalChallengeFor,
   approvalPayloadFor,
+  preflightApprovalResponse,
   envelope,
   outcomeForNonPendingState,
 } from "./pending-view.js";
@@ -507,6 +510,19 @@ export async function prepareReconcileCommit(
       "The tracked Google Play edit could not be read; no recovery approval was created.",
     );
 
+  const statement = createReleaseCommitReconciliationStatement(
+    deps.packageName,
+    selected,
+    DAEMON_RECONCILIATION_MODE,
+  );
+  const summary = approvalHook.createSafeSummary({});
+  const refused = preflightApprovalResponse(correlationId, summary, statement, {
+    toolName: RELEASES_RECONCILE_COMMIT_TOOL_NAME,
+    permission,
+    packageName: deps.packageName,
+    requestDigest: approvalHook.createRequestDigest({}),
+  });
+  if (refused) return refused;
   let record: PendingOperationRecord;
   try {
     record = await deps.pendingStore.prepare({
@@ -526,8 +542,8 @@ export async function prepareReconcileCommit(
     );
   }
   return envelope(correlationId, "approval_required", {
-    summary: approvalHook.createSafeSummary({}),
-    approval: approvalChallengeFor(record),
+    summary,
+    approval: approvalChallengeFor(record, statement),
   });
 }
 
@@ -675,6 +691,22 @@ export async function executeReconcileCommit(
         "The reconciliation intent could not be rebuilt from durable evidence.",
       );
     }
+    if (
+      isLegacyOpaqueApproval(
+        record.requestDigest,
+        createReleaseCommitReconciliationStatement(
+          deps.packageName,
+          candidate,
+          DAEMON_RECONCILIATION_MODE,
+        ),
+      )
+    )
+      return failure(
+        correlationId,
+        "approval_mismatch",
+        "APPROVAL_STATEMENT_REQUIRED",
+        "A new human-verifiable approval statement and signature are required.",
+      );
     if (hook.createRequestDigest({}) !== record.requestDigest) {
       // Trusted state moved after approval. The old approval is NOT rebound.
       return failure(

@@ -92,6 +92,9 @@ export const REQUIRED_MODULE_FILES = Object.freeze([
   "dist/audit/index.js",
   "dist/config/index.js",
   "dist/runtime/agent/index.js",
+  "dist/approvals/canonical-json.js",
+  "dist/approvals/statement.js",
+  "dist/approvals/challenge.js",
 ]);
 
 export const REQUIRED_FILES = Object.freeze([...REQUIRED_PAYLOAD_FILES, ...REQUIRED_MODULE_FILES]);

@@ -17,9 +17,14 @@ import {
   OPERATOR_APPROVAL_PROTOCOL_VERSION,
   type OperatorApprovalPayload,
 } from "../runtime/approvals/operator-signature.js";
-import type { PendingOperationRecord, PendingOperationStateName } from "./pending-store.js";
+import type {
+  PendingOperationRecord,
+  PendingOperationStateName,
+  PendingPrepareInput,
+} from "./pending-store.js";
 import {
   PLAYOPS_DAEMON_PROTOCOL_VERSION,
+  serializeDaemonResponse,
   type DaemonApprovalChallenge,
   type DaemonResponseEnvelope,
   type DaemonResponseOutcome,
@@ -42,7 +47,18 @@ export function envelope(
 }
 
 /** The exact signed projection of a server-owned pending record. */
-export function approvalPayloadFor(record: PendingOperationRecord): OperatorApprovalPayload {
+type SignedRecord = Pick<
+  PendingOperationRecord,
+  | "requestId"
+  | "nonce"
+  | "toolName"
+  | "permission"
+  | "packageName"
+  | "requestDigest"
+  | "expiresAtUtc"
+>;
+
+export function approvalPayloadFor(record: SignedRecord): OperatorApprovalPayload {
   return {
     protocolVersion: OPERATOR_APPROVAL_PROTOCOL_VERSION,
     requestId: record.requestId,
@@ -59,8 +75,13 @@ export function approvalPayloadFor(record: PendingOperationRecord): OperatorAppr
  * Safe challenge metadata. No pending intent, no internal identities, no
  * credentials — only what a human needs to sign the canonical bytes.
  */
-export function approvalChallengeFor(record: PendingOperationRecord): DaemonApprovalChallenge {
+export function approvalChallengeFor(
+  record: SignedRecord,
+  statementCanonical: string,
+): DaemonApprovalChallenge {
   return Object.freeze({
+    approvalStatementVersion: 1 as const,
+    approvalStatementCanonical: statementCanonical,
     requestId: record.requestId,
     toolName: record.toolName,
     permission: record.permission,
@@ -71,8 +92,48 @@ export function approvalChallengeFor(record: PendingOperationRecord): DaemonAppr
   });
 }
 
+/** Refuse impossible-to-deliver semantics BEFORE durable pending creation.
+ * UUID36 and base64url nonce43 come from the unchanged store generators. The
+ * longest canonical Date ISO expiry is27 bytes. That reserves six envelope
+ * bytes beyond an ordinary24-byte expiry (which appears twice). No truncation.
+ * Full JSON serialization accounts for statement double escaping and UTF8,
+ * the exact summary/correlation and signed payload, not a note-only estimate.
+ */
+export function preflightApprovalResponse(
+  correlationId: string,
+  summary: string,
+  statementCanonical: string,
+  binding: Pick<PendingPrepareInput, "toolName" | "permission" | "packageName" | "requestDigest">,
+): DaemonResponseEnvelope | undefined {
+  try {
+    serializeDaemonResponse(
+      envelope(correlationId, "approval_required", {
+        summary,
+        approval: approvalChallengeFor(
+          {
+            ...binding,
+            requestId: "00000000-0000-4000-8000-000000000000",
+            nonce: "n".repeat(43),
+            expiresAtUtc: "+100000-01-01T00:00:00.000Z",
+          },
+          statementCanonical,
+        ),
+      }),
+    );
+    return undefined;
+  } catch {
+    return envelope(correlationId, "local_state_failure", {
+      error: {
+        code: "APPROVAL_CHALLENGE_UNDELIVERABLE",
+        message:
+          "The complete approval statement or envelope is invalid or exceeds transport bounds; no pending request was created.",
+      },
+    });
+  }
+}
+
 /**
- * Map a durable non-PENDING state onto its own protocol v4 outcome.
+ * Map a durable non-PENDING state onto its own protocol v5 outcome.
  *
  * TTL is enforced through the store's own state projection, which schema v2
  * deliberately orders so that RECOVERY_REQUIRED and COMPLETED always outrank

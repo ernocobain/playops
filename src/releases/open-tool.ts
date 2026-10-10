@@ -10,7 +10,11 @@
  *
  * This tool never commits, uploads, validates, or mutates a track, and never retries.
  */
-import { createHash } from "node:crypto";
+import {
+  APPROVAL_CONSEQUENCES,
+  approvalStatementDigest,
+  canonicalApprovalStatement,
+} from "../approvals/statement.js";
 import type { AgentToolBinding } from "../runtime/agent/index.js";
 import type { ToolDefinition, ToolSchema } from "../runtime/tools/index.js";
 import type { VerificationResult } from "../runtime/verification/index.js";
@@ -85,20 +89,28 @@ function asOpenError(cause: unknown): ReleaseError {
  * composition-bound package, and the fact that this approval expects NO tracked
  * local session. No credential, token, or raw Google value is ever included.
  */
-export function createReleaseEditOpenDigest(packageName: string): string {
-  const canonical = JSON.stringify({
-    version: 1,
+export function createReleaseEditOpenStatement(packageName: string): string {
+  return canonicalApprovalStatement({
+    statementVersion: 1,
+    operation: "open_edit",
     toolName: RELEASES_OPEN_EDIT_TOOL_NAME,
+    permission: "destructive",
     packageName: validateReleasePackageName(packageName),
-    expectedLocalSession: "none",
+    facts: { expectedLocalSession: "none" },
+    consequences: APPROVAL_CONSEQUENCES.open_edit,
   });
-  return createHash("sha256").update(canonical).digest("hex");
+}
+export function createReleaseEditOpenDigest(packageName: string): string {
+  return approvalStatementDigest(createReleaseEditOpenStatement(packageName));
 }
 
 /** Exact human-facing summary for the approval prompt. Never contains secrets. */
 export function createReleaseEditOpenSummary(packageName: string): string {
+  const visible = JSON.parse(createReleaseEditOpenStatement(packageName)) as {
+    packageName: string;
+  };
   return [
-    `Open a new Google Play edit for ${validateReleasePackageName(packageName)}.`,
+    `Open a new Google Play edit for ${visible.packageName}.`,
     "",
     "WARNING: Google may invalidate another active edit owned by this API user for the same application. Any uncommitted changes in that edit would be lost.",
     "",

@@ -7,6 +7,7 @@ import {
   REQUIRED_FILES,
   ROOT_PAYLOAD_FILES,
   RUNTIME_DEPENDENCIES,
+  REQUIRED_MODULE_FILES,
 } from "./package-content.mjs";
 
 const metadata = () => ({
@@ -94,6 +95,22 @@ for (const update of [
   test(`rejects drifted or install-compiling metadata ${JSON.stringify(update)}`, () =>
     assert.throws(() => assertPackageMetadata({ ...metadata(), ...update })));
 }
+for (const path of [
+  "dist/approvals/canonical-json.js",
+  "dist/approvals/statement.js",
+  "dist/approvals/challenge.js",
+]) {
+  test(`Stage4B.1 requires the compiled human-verifiable approval module ${path}`, () => {
+    assert.ok(REQUIRED_MODULE_FILES.includes(path), `${path} must be required`);
+    assert.throws(() =>
+      assertPackageContents(
+        REQUIRED_FILES.filter((p) => p !== path),
+        metadata(),
+      ),
+    );
+  });
+}
+
 test("requires the release changelog in the payload", () => {
   const withoutChangelog = REQUIRED_FILES.filter((path) => path !== "CHANGELOG.md");
   assert.throws(() => assertPackageContents(withoutChangelog, metadata()), /CHANGELOG\.md/u);

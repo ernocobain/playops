@@ -174,7 +174,7 @@ describe("daemon status operation", () => {
     const fields = parseSummary((await harness.status()).summary);
 
     expect(fields.protocolVersion).toBe(String(PLAYOPS_DAEMON_PROTOCOL_VERSION));
-    expect(fields.protocolVersion).toBe("4");
+    expect(fields.protocolVersion).toBe("5");
     // Version comes from the injected metadata seam, never hard-coded here.
     expect(fields.packageVersion).toBe("9.9.9-test");
     expect(fields.configuredPackage).toBe(PACKAGE);

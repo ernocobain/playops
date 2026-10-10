@@ -7,6 +7,12 @@
  * binding that Phase 4.10 will attach to the real commit executor.
  */
 import { createHash } from "node:crypto";
+import { stableStringify } from "../approvals/canonical-json.js";
+import {
+  APPROVAL_CONSEQUENCES,
+  approvalStatementDigest,
+  canonicalApprovalStatement,
+} from "../approvals/statement.js";
 import type { EditValidationResult } from "./validate-edit-tool.js";
 import {
   normalizeReleaseTracks,
@@ -59,6 +65,8 @@ export interface ReleaseCommitIntent {
   /** Trusted exact notes retained for Phase 4.11 deep read-back; never shown in summaries. */
   readonly releaseNotes: readonly LocalizedReleaseNote[];
   readonly noteLanguages: readonly string[];
+  /** Complete canonical target track, transient only; every exact note is visible. */
+  readonly targetTrackCandidate: Readonly<Record<string, unknown>>;
   readonly stateDigest: string;
   readonly validationExpiryTimeSeconds: string;
   readonly changesInReviewBehavior: ReleaseCommitReviewBehavior;
@@ -68,6 +76,7 @@ export interface ReleaseCommitIntent {
 
 export interface ReleaseCommitApprovalBinding {
   readonly permission: "publish";
+  readonly approvalStatementCanonical: string;
   readonly createRequestDigest: (validatedInput: unknown) => string;
   readonly createSafeSummary: (validatedInput: unknown) => string;
 }
@@ -145,29 +154,16 @@ function canonicalRelease(release: ReleaseState): Record<string, unknown> {
   };
 }
 
+function freezeCanonical<T extends object>(value: T): T {
+  for (const child of Object.values(value as Record<string, unknown>)) {
+    if (typeof child === "object" && child !== null) freezeCanonical(child);
+  }
+  return Object.freeze(value);
+}
 function canonicalTrack(track: ReleaseTrackState): Record<string, unknown> {
   const releases = track.releases.map(canonicalRelease);
   releases.sort((left, right) => compareCodePoint(stableStringify(left), stableStringify(right)));
-  return { releases, track: track.track };
-}
-
-function stableStringify(value: unknown): string {
-  if (value === null || typeof value === "string" || typeof value === "boolean") {
-    return JSON.stringify(value);
-  }
-  if (typeof value === "number") {
-    if (!Number.isFinite(value)) throw invalidIntent("Commit intent contains a non-finite number.");
-    return JSON.stringify(value);
-  }
-  if (typeof value === "bigint") return JSON.stringify(value.toString());
-  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
-  if (isRecord(value)) {
-    return `{${Object.keys(value)
-      .sort(compareCodePoint)
-      .map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`)
-      .join(",")}}`;
-  }
-  throw invalidIntent("Commit intent contains an unsupported value.");
+  return freezeCanonical({ releases, track: track.track });
 }
 
 function sha256Canonical(value: unknown): string {
@@ -182,7 +178,7 @@ export function createReleaseCommitStateDigest(track: ReleaseTrackState): string
 }
 
 /** Deterministic digest of the exact future commit request identity. */
-export function createReleaseCommitRequestDigest(intent: ReleaseCommitIntent): string {
+function createReleaseCommitBindingFingerprint(intent: ReleaseCommitIntent): string {
   return sha256Canonical({
     changesInReviewBehavior: intent.changesInReviewBehavior,
     changesNotSentForReview: intent.changesNotSentForReview,
@@ -199,6 +195,36 @@ export function createReleaseCommitRequestDigest(intent: ReleaseCommitIntent): s
     version: intent.version,
     versionCode: intent.versionCode,
   });
+}
+
+/** Hash all existing internal binding fields without disclosing the edit handle. */
+export function createReleaseCommitStatement(intent: ReleaseCommitIntent): string {
+  return canonicalApprovalStatement({
+    statementVersion: 1,
+    operation: "commit",
+    toolName: RELEASES_COMMIT_EDIT_TOOL_NAME,
+    permission: "publish",
+    packageName: intent.packageName,
+    facts: {
+      targetTrack: intent.targetTrack,
+      versionCode: intent.versionCode,
+      releaseName: intent.releaseName,
+      releaseStatus: intent.releaseStatus,
+      rolloutFraction: intent.rolloutFraction ?? null,
+      noteLanguages: intent.noteLanguages,
+      changesInReviewBehavior: intent.changesInReviewBehavior,
+      changesNotSentForReview: intent.changesNotSentForReview,
+      targetTrackCandidate: intent.targetTrackCandidate,
+    },
+    integrity: {
+      stateDigest: intent.stateDigest,
+      commitBindingFingerprint: createReleaseCommitBindingFingerprint(intent),
+    },
+    consequences: APPROVAL_CONSEQUENCES.commit,
+  });
+}
+export function createReleaseCommitRequestDigest(intent: ReleaseCommitIntent): string {
+  return approvalStatementDigest(createReleaseCommitStatement(intent));
 }
 
 function validateIntentForApproval(intent: ReleaseCommitIntent): ReleaseCommitIntent {
@@ -309,6 +335,7 @@ export function createReleaseCommitIntent(input: ReleaseCommitIntentInput): Rele
     ...(release.userFraction !== undefined ? { rolloutFraction: release.userFraction } : {}),
     releaseNotes: Object.freeze(normalizedNotes),
     noteLanguages: Object.freeze(normalizedNotes.map((note) => note.language)),
+    targetTrackCandidate: canonicalTrack(track),
     stateDigest,
     validationExpiryTimeSeconds,
     changesInReviewBehavior,
@@ -324,29 +351,34 @@ export function createReleaseCommitApprovalBinding(
   intent: ReleaseCommitIntent,
 ): ReleaseCommitApprovalBinding {
   const validated = validateIntentForApproval(intent);
-  const requestDigest = createReleaseCommitRequestDigest(validated);
-  const languages =
-    validated.noteLanguages.length > 0 ? validated.noteLanguages.join(", ") : "(none)";
-  const rollout =
-    validated.rolloutFraction === undefined ? "none" : String(validated.rolloutFraction);
+  const approvalStatementCanonical = createReleaseCommitStatement(validated);
+  const requestDigest = approvalStatementDigest(approvalStatementCanonical);
+  const visible = JSON.parse(approvalStatementCanonical) as {
+    packageName: string;
+    facts: Omit<ReleaseCommitIntent, "rolloutFraction"> & { rolloutFraction: number | null };
+  };
+  const facts = visible.facts;
+  const languages = facts.noteLanguages.length > 0 ? facts.noteLanguages.join(", ") : "(none)";
+  const rollout = facts.rolloutFraction === null ? "none" : String(facts.rolloutFraction);
   const summary = [
     "PUBLISH Google Play edit.",
-    `App: ${validated.packageName}`,
-    `Track: ${validated.targetTrack}`,
-    `Version: ${validated.versionCode}`,
-    `Release: ${validated.releaseName}`,
-    `Status: ${validated.releaseStatus}`,
+    `App: ${visible.packageName}`,
+    `Track: ${facts.targetTrack}`,
+    `Version: ${facts.versionCode}`,
+    `Release: ${facts.releaseName}`,
+    `Status: ${facts.releaseStatus}`,
     `Rollout fraction: ${rollout}`,
     `Release-note languages: ${languages}`,
-    `Review behavior: ${validated.changesInReviewBehavior}`,
-    `Changes not sent for review: ${String(validated.changesNotSentForReview)}`,
+    `Review behavior: ${facts.changesInReviewBehavior}`,
+    `Changes not sent for review: ${String(facts.changesNotSentForReview)}`,
     "This action applies the currently validated edit changes to the app.",
     "Committing may invalidate other active edits for this application, including uncommitted work owned by other users.",
     "If changes are already in review, PlayOps will fail rather than cancel that review.",
-    "Only this exact commit intent is approved; no other hidden operation is included.",
+    "Commit applies the entire validated edit, not just this track. Other edit contents are not enumerated by this approval; trust the managed edit provenance.",
   ].join("\n");
   return Object.freeze({
     permission: "publish" as const,
+    approvalStatementCanonical,
     createRequestDigest: () => requestDigest,
     createSafeSummary: () => summary,
   });

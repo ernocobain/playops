@@ -11,7 +11,9 @@ the repository maintainers.
 
 ## [Unreleased]
 
-No unreleased changes yet.
+### Added
+
+- Human-verifiable approval statements (`ApprovalStatement` V1) for the four signed daemon operations. Each approval challenge carries `approvalStatementVersion: 1` and `approvalStatementCanonical`: the exact deterministic JSON text whose SHA-256 is the signed `requestDigest`. Commit statements list every target-track release and its exact localized release-note text. The daemon wire protocol is version 5, and pending approvals created under the previous opaque-digest scheme are refused instead of executed.
 
 ## [0.3.0] - 2026-10-09
 

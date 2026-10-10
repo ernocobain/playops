@@ -11,10 +11,12 @@
  * asserts anything about remote reality beyond the fake gateway's own calls.
  */
 import { generateKeyPairSync, sign, type KeyObject } from "node:crypto";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { validateSerializedApproval } from "./approval-statement-reference.js";
+import { requestClaimPath } from "../src/daemon/request-claim.js";
 import { createPackageOperationSingleFlightCoordinator } from "../src/daemon/package-operation-singleflight.js";
 import {
   executeCommit,
@@ -276,6 +278,23 @@ async function buildHarness(
     registry,
     openEdit: { binding: openBuilt.binding, input: {} },
     commit: deps,
+    attachNotes: {
+      packageName: PACKAGE,
+      managedSessionStore: sessionStore,
+      writeIntentStore,
+      releaseGateway: {
+        ...fake.gateway,
+        listBundles: async () => [
+          { versionCode: VERSION_CODE, sha1: "a".repeat(40), sha256: "b".repeat(64) },
+        ],
+        updateTrack: async (_session, target, request) => {
+          fake.faults.track = { track: target, releases: structuredClone(request.releases) };
+          return structuredClone(fake.faults.track);
+        },
+      },
+      ledger: deps.ledger,
+      verificationLedger: deps.verificationLedger,
+    },
     operatorVerifier: deps.operatorVerifier,
     ledger: deps.ledger,
     approvalLedger: deps.approvalLedger,
@@ -402,6 +421,131 @@ async function prepareSigned(
 // ------------------------------------------------------------------ prepare
 
 describe("prepare_commit: trusted intent derivation", () => {
+  it("Stage4B.1 preserves statusUnspecified on every other authorized target-track release", async () => {
+    const h = await buildHarness();
+    h.setManagedTrack({
+      track: TRACK,
+      releases: [
+        { name: "Candidate", status: "completed", versionCodes: [VERSION_CODE] },
+        { name: "Older unspecified", status: "statusUnspecified", versionCodes: ["41"] },
+      ],
+    });
+    const prepared = await h.call({
+      kind: "prepare_commit",
+      track: TRACK,
+      versionCode: VERSION_CODE,
+    });
+    expect(prepared.outcome).toBe("approval_required");
+    const a = prepared.approval;
+    if (!a) throw new Error("Missing challenge");
+    const verified = validateSerializedApproval(JSON.stringify(a));
+    const track = verified.statement.facts.targetTrackCandidate as {
+      releases: { status: string; versionCodes: string[] }[];
+    };
+    expect(track.releases.find((r) => r.versionCodes.includes("41"))?.status).toBe(
+      "statusUnspecified",
+    );
+    const signature = sign(null, verified.bytesToSign, h.privateKey).toString("base64url");
+    expect(
+      (await h.call({ kind: "execute_commit", requestId: a.requestId, signature })).outcome,
+    ).toBe("success");
+    expect(h.fake.calls.commitEdit).toBe(1);
+  });
+  it("Stage4B.1 refuses escape-amplified notes before creating any durable pending", async () => {
+    const h = await buildHarness();
+    h.setManagedTrack(
+      trackState({ releaseNotes: [{ language: "en-US", text: "\u0000".repeat(40000) }] }),
+    );
+    expect(
+      await h.call({ kind: "prepare_commit", track: TRACK, versionCode: VERSION_CODE }),
+    ).toMatchObject({
+      outcome: "local_state_failure",
+      error: { code: "APPROVAL_CHALLENGE_UNDELIVERABLE" },
+    });
+    expect(await h.pendingStore.list()).toEqual([]);
+    expect(h.fake.calls.commitEdit).toBe(0);
+  });
+  it("Stage4B.1 exposes every target-track release, version and exact localized note before signing", async () => {
+    const h = await buildHarness();
+    const exact = "é 東京\nSecond line e\u0301";
+    h.setManagedTrack({
+      track: TRACK,
+      releases: [
+        {
+          name: "Older",
+          status: "completed",
+          versionCodes: ["40", "39"],
+          releaseNotes: [{ language: "fr", text: "" }],
+        },
+        {
+          name: "Candidate",
+          status: "inProgress",
+          userFraction: 0.1,
+          versionCodes: [VERSION_CODE, "41"],
+          releaseNotes: [
+            { language: "id", text: "Catatan" },
+            { language: "en-us", text: exact },
+          ],
+          countryTargeting: { countries: ["US", "ID"], includeRestOfWorld: false },
+          inAppUpdatePriority: 3,
+        },
+      ],
+    });
+    const prepared = await h.call({
+      kind: "prepare_commit",
+      track: TRACK,
+      versionCode: VERSION_CODE,
+    });
+    expect(prepared.outcome).toBe("approval_required");
+    const a = prepared.approval;
+    expect(a?.approvalStatementVersion).toBe(1);
+    if (!a) throw new Error("Missing challenge");
+    expect(typeof a.approvalStatementCanonical).toBe("string");
+    const statement = JSON.parse(a.approvalStatementCanonical) as {
+      facts: {
+        targetTrackCandidate: {
+          releases: { name: string; releaseNotes: unknown[]; versionCodes: string[] }[];
+        };
+      };
+    };
+    expect(statement).toMatchObject({
+      statementVersion: 1,
+      operation: "commit",
+      toolName: "releases.commit_edit",
+      permission: "publish",
+      packageName: PACKAGE,
+      facts: {
+        targetTrack: TRACK,
+        versionCode: VERSION_CODE,
+        releaseName: "Candidate",
+        releaseStatus: "inProgress",
+        rolloutFraction: 0.1,
+        changesInReviewBehavior: "ERROR_IF_IN_REVIEW",
+        changesNotSentForReview: false,
+      },
+    });
+    expect(statement.facts.targetTrackCandidate.releases).toHaveLength(2);
+    const candidate = statement.facts.targetTrackCandidate.releases.find(
+      (r) => r.name === "Candidate",
+    );
+    expect(candidate?.versionCodes).toEqual(["41", VERSION_CODE]);
+    expect(candidate?.releaseNotes).toEqual([
+      { language: "en-US", text: exact },
+      { language: "id", text: "Catatan" },
+    ]);
+    expect(a.approvalStatementCanonical).toContain("entire validated edit");
+    expect(
+      (
+        await h.call({
+          kind: "execute_commit",
+          requestId: a.requestId,
+          signature: h.sign(a.canonicalPayload),
+        })
+      ).outcome,
+    ).toBe("success");
+    expect(h.fake.calls.commitEdit).toBe(1);
+  });
+
   it("derives the production intent from read-only Google calls and returns a safe challenge", async () => {
     const harness = await buildHarness();
     const prepared = await harness.call({
@@ -548,6 +692,119 @@ describe("prepare_commit: trusted intent derivation", () => {
 // ------------------------------------------------------------------ execute
 
 describe("execute_commit: signed execution", () => {
+  it.each([false, true])(
+    "Stage4B.1 unsigned attach -> serialized independent verification -> exact commit (note drift=%s)",
+    async (drift) => {
+      const h = await buildHarness();
+      h.setManagedTrack(
+        trackState({
+          status: "completed",
+          releaseNotes: [{ language: "id", text: "Catatan asli" }],
+        }),
+      );
+      const note = "Unsigned alteration — 東京 e\u0301";
+      const attached = await h.call({
+        kind: "attach_notes",
+        track: TRACK,
+        versionCode: VERSION_CODE,
+        locale: "en-US",
+        noteText: note,
+      });
+      expect(attached.outcome).toBe("success");
+      const prepared = await h.call({
+        kind: "prepare_commit",
+        track: TRACK,
+        versionCode: VERSION_CODE,
+      });
+      const challenge = prepared.approval;
+      if (!challenge) throw new Error("Missing approval");
+      // The reference's ONLY authorization input: serialized wire challenge.
+      const verified = validateSerializedApproval(JSON.stringify(challenge));
+      const track = verified.statement.facts.targetTrackCandidate as {
+        releases: { releaseNotes: { language: string; text: string }[] }[];
+      };
+      expect(track.releases[0]?.releaseNotes).toEqual([
+        { language: "en-US", text: note },
+        { language: "id", text: "Catatan asli" },
+      ]);
+      // The unsigned sibling summary never reaches the reference or changes its semantic input.
+      const falseSummary = { ...prepared, summary: "Harmless empty notes; no publication." };
+      expect(
+        validateSerializedApproval(JSON.stringify(falseSummary.approval)).bytesToSign.equals(
+          verified.bytesToSign,
+        ),
+      ).toBe(true);
+      const corrupted = {
+        ...challenge,
+        approvalStatementCanonical: challenge.approvalStatementCanonical.replace(
+          "Unsigned alteration",
+          "Benign-looking substitution",
+        ),
+      };
+      expect(() => validateSerializedApproval(JSON.stringify(corrupted))).toThrow();
+      // Test-only synthetic private key is used AFTER independent validation, never before.
+      const signature = sign(null, verified.bytesToSign, h.privateKey).toString("base64url");
+      if (drift)
+        h.setManagedTrack(
+          trackState({
+            status: "completed",
+            releaseNotes: [
+              { language: "en-US", text: note + "!" },
+              { language: "id", text: "Catatan asli" },
+            ],
+          }),
+        );
+      const result = await h.call({
+        kind: "execute_commit",
+        requestId: verified.requestId,
+        signature,
+      });
+      expect(result.outcome).toBe(drift ? "local_state_failure" : "success");
+      expect(h.fake.calls.commitEdit).toBe(drift ? 0 : 1);
+      expect(await h.pendingStore.state(verified.requestId)).toBe(drift ? "pending" : "completed");
+      if (drift) {
+        expect(existsSync(requestClaimPath(h.deps.claimRoot, verified.requestId))).toBe(false);
+        expect(existsSync(join(h.dir, "approval.jsonl"))).toBe(false);
+      }
+      console.log(
+        JSON.stringify({
+          proof: "serialized-only independent approval",
+          unsignedAttachOutcome: attached.outcome,
+          noteDrift: drift,
+          commitOutcome: result.outcome,
+          commitCalls: h.fake.calls.commitEdit,
+          pendingState: await h.pendingStore.state(verified.requestId),
+        }),
+      );
+    },
+  );
+  it("Stage4B.1 refuses a valid legacy opaque commit approval without claim or consumption", async () => {
+    const h = await buildHarness();
+    const a = (await h.call({ kind: "prepare_commit", track: TRACK, versionCode: VERSION_CODE }))
+      .approval;
+    if (!a) throw new Error("Missing challenge");
+    const oldDigest = (
+      JSON.parse(a.approvalStatementCanonical) as {
+        integrity: { commitBindingFingerprint: string };
+      }
+    ).integrity.commitBindingFingerprint;
+    const current = await h.pendingStore.load(a.requestId);
+    if (!current) throw new Error("Missing pending");
+    const legacy = await h.pendingStore.prepare({ ...current, requestDigest: oldDigest });
+    const signature = h.sign(
+      encodeOperatorApprovalPayload({ protocolVersion: 1, ...legacy }).toString("utf8"),
+    );
+    expect(
+      await h.call({ kind: "execute_commit", requestId: legacy.requestId, signature }),
+    ).toMatchObject({
+      outcome: "approval_mismatch",
+      error: { code: "APPROVAL_STATEMENT_REQUIRED" },
+    });
+    expect(await h.pendingStore.state(legacy.requestId)).toBe("pending");
+    expect(h.fake.calls.commitEdit).toBe(0);
+    expect(existsSync(join(h.dir, "approval.jsonl"))).toBe(false);
+    expect(existsSync(requestClaimPath(h.deps.claimRoot, legacy.requestId))).toBe(false);
+  });
   it("executes the production commit path exactly once and completes the request", async () => {
     const harness = await buildHarness();
     const { requestId, signature } = await prepareSigned(harness);

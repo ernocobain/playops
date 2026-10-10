@@ -11,7 +11,11 @@ import {
   type PendingState,
 } from "../src/daemon/pending-store.js";
 import { approvalPayloadFor } from "../src/daemon/pending-view.js";
-import { parseDaemonRequest, type DaemonRequest } from "../src/daemon/protocol.js";
+import {
+  PLAYOPS_DAEMON_PROTOCOL_VERSION,
+  parseDaemonRequest,
+  type DaemonRequest,
+} from "../src/daemon/protocol.js";
 import { requestClaimPath } from "../src/daemon/request-claim.js";
 import {
   createFileReleaseCommitAttemptJournal,
@@ -408,7 +412,11 @@ export async function fixture(options: ReconcileFixtureOptions = {}) {
   }
   const call = (request: DaemonRequest) =>
     operations.handle(
-      parseDaemonRequest({ protocolVersion: 4, correlationId: "reconcile-fixture", request }),
+      parseDaemonRequest({
+        protocolVersion: PLAYOPS_DAEMON_PROTOCOL_VERSION,
+        correlationId: "reconcile-fixture",
+        request,
+      }),
     );
   return {
     root,

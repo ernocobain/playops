@@ -6,10 +6,12 @@
  * the production `releases.open_edit` tool, its verifier and the managed-session
  * store. Fake: the Google gateway only. Offline throughout; no network.
  */
-import { generateKeyPairSync, sign, type KeyObject } from "node:crypto";
+import { createHash, generateKeyPairSync, sign, type KeyObject } from "node:crypto";
+import { encodeOperatorApprovalPayload } from "../src/runtime/approvals/operator-signature.js";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { validateSerializedApproval } from "./approval-statement-reference.js";
 import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
 import { readAuditEntries } from "../src/audit/index.js";
 import { createDaemonOperations, type DaemonOperations } from "../src/daemon/operations.js";
@@ -95,6 +97,7 @@ interface HarnessOptions {
     readonly getEdit: Mock;
   }) => void;
   readonly wrapStore?: (store: PendingOperationStore) => PendingOperationStore;
+  readonly approvalSummary?: string;
   readonly packageName?: string;
   readonly now?: () => Date;
 }
@@ -152,7 +155,8 @@ async function buildHarness(options: HarnessOptions = {}): Promise<Harness> {
         runtimeDigest.override === ""
           ? openApproval.createRequestDigest(input)
           : runtimeDigest.override,
-      createSafeSummary: (input: unknown): string => openApproval.createSafeSummary(input),
+      createSafeSummary: (input: unknown): string =>
+        options.approvalSummary ?? openApproval.createSafeSummary(input),
     },
   };
 
@@ -337,6 +341,44 @@ describe("daemon dispatcher static routing", () => {
 });
 
 describe("prepare_open_edit", () => {
+  it("Stage4B.1 refuses an undeliverable open summary before durable prepare", async () => {
+    const h = await buildHarness({ approvalSummary: "x".repeat(2001) });
+    expect(await h.prepare()).toMatchObject({
+      outcome: "local_state_failure",
+      error: { code: "APPROVAL_CHALLENGE_UNDELIVERABLE" },
+    });
+    expect(await h.pendingStore.list()).toEqual([]);
+    expect(h.createEdit).not.toHaveBeenCalled();
+  });
+  it("Stage4B.1 exposes the exact human-verifiable open statement preimage", async () => {
+    const harness = await buildHarness();
+    const prepared = await harness.prepare();
+    const approval = prepared.approval;
+    expect(approval).toBeDefined();
+    if (!approval) throw new Error("Missing challenge");
+    expect(Reflect.get(approval, "approvalStatementVersion")).toBe(1);
+    const canonical: unknown = Reflect.get(approval, "approvalStatementCanonical");
+    expect(typeof canonical).toBe("string");
+    if (typeof canonical !== "string") throw new Error("Missing statement preimage");
+    expect(createHash("sha256").update(canonical, "utf8").digest("hex")).toBe(
+      approval.requestDigest,
+    );
+    expect(JSON.parse(canonical)).toMatchObject({
+      statementVersion: 1,
+      operation: "open_edit",
+      toolName: "releases.open_edit",
+      permission: "destructive",
+      packageName: PACKAGE,
+      facts: { expectedLocalSession: "none" },
+    });
+    expect(canonical).toContain("invalidate");
+    expect(canonical).toContain("does not publish or commit");
+    const verified = validateSerializedApproval(JSON.stringify(approval));
+    const signature = sign(null, verified.bytesToSign, harness.privateKey).toString("base64url");
+    expect((await harness.execute(approval.requestId, signature)).outcome).toBe("success");
+    expect(harness.observedStatesAtMutation).toEqual(["consumed"]);
+  });
+
   it("returns a safe challenge and performs zero Google calls", async () => {
     const harness = await buildHarness();
     const prepared = await harness.prepare();
@@ -417,6 +459,40 @@ describe("execute_open_edit — success lifecycle", () => {
 });
 
 describe("execute_open_edit — pre-claim rejection is zero-mutation", () => {
+  it("Stage4B.1 refuses a valid legacy opaque open approval before claim or consumption", async () => {
+    const h = await buildHarness();
+    const oldDigest = createHash("sha256")
+      .update(
+        JSON.stringify({
+          version: 1,
+          toolName: "releases.open_edit",
+          packageName: PACKAGE,
+          expectedLocalSession: "none",
+        }),
+      )
+      .digest("hex");
+    const legacy = await h.pendingStore.prepare({
+      operation: "open_edit",
+      toolName: "releases.open_edit",
+      permission: "destructive",
+      packageName: PACKAGE,
+      requestDigest: oldDigest,
+      intent: { kind: "open_edit" },
+    });
+    const signature = sign(
+      null,
+      encodeOperatorApprovalPayload({ protocolVersion: 1, ...legacy }),
+      h.privateKey,
+    ).toString("base64url");
+    expect(await h.execute(legacy.requestId, signature)).toMatchObject({
+      outcome: "approval_mismatch",
+      error: { code: "APPROVAL_STATEMENT_REQUIRED" },
+    });
+    expect(await h.pendingStore.state(legacy.requestId)).toBe("pending");
+    expect(h.claimExists()).toBe(false);
+    expect(h.createEdit).not.toHaveBeenCalled();
+    expect(h.approvalEntries()).toEqual([]);
+  });
   it("returns request_not_found for a canonical absent request id", async () => {
     const harness = await buildHarness();
     const result = await harness.execute("99999999-8888-4777-8666-555555555555", "c2ln");

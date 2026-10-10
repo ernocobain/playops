@@ -1,3 +1,5 @@
+import { readFileSync, writeFileSync } from "node:fs";
+import { validateSerializedApproval } from "./approval-statement-reference.js";
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanupFixtures, fixture } from "./daemon-reconcile-fixture.js";
 import { ReleaseError } from "../src/releases/index.js";
@@ -5,6 +7,110 @@ import { readAuditEntries } from "../src/audit/index.js";
 
 afterEach(cleanupFixtures);
 describe("Stage 3F.2 daemon reconciliation", () => {
+  it.each(["updatedAtUtc", "priorStateDigest"])(
+    "pins full snapshot drift for hidden %s without Google, claim or consumption",
+    async (field) => {
+      const h = await fixture();
+      const a = (await h.prepare()).approval;
+      if (!a) throw new Error("Missing challenge");
+      const signature = h.signChallenge(
+        validateSerializedApproval(JSON.stringify(a)).bytesToSign.toString("utf8"),
+      );
+      const journal = JSON.parse(readFileSync(h.journalPath, "utf8")) as {
+        records: Record<string, unknown>[];
+      };
+      const r = journal.records[0];
+      if (!r) throw new Error("Missing candidate");
+      r[field] = field === "updatedAtUtc" ? "2026-10-09T00:01:00.000Z" : "d".repeat(64);
+      writeFileSync(h.journalPath, JSON.stringify(journal));
+      expect(await h.execute(a.requestId, signature)).toMatchObject({
+        outcome: "local_state_failure",
+        error: { code: "RECONCILIATION_INTENT_DRIFT_REQUEST_DIGEST" },
+      });
+      expect(await h.pendingStore.state(a.requestId)).toBe("pending");
+      expect(h.claimExists(a.requestId)).toBe(false);
+      expect(h.consumptions()).toBe(0);
+      expect(Object.values(h.calls).every((n) => n === 0)).toBe(true);
+    },
+  );
+  it("Stage4B.1 refuses an oversized recovery statement before durable prepare", async () => {
+    const h = await fixture();
+    const journal = JSON.parse(readFileSync(h.journalPath, "utf8")) as {
+      records: { releaseName: string }[];
+    };
+    const candidate = journal.records[0];
+    if (!candidate) throw new Error("Missing journal");
+    candidate.releaseName = "é".repeat(140000);
+    writeFileSync(h.journalPath, JSON.stringify(journal));
+    expect(await h.prepare()).toMatchObject({
+      outcome: "local_state_failure",
+      error: { code: "APPROVAL_CHALLENGE_UNDELIVERABLE" },
+    });
+    expect(await h.pendingStore.list()).toEqual([]);
+    expect(Object.values(h.calls).every((n) => n === 0)).toBe(true);
+  });
+  it("Stage4B.1 refuses a valid legacy opaque reconciliation approval before claim", async () => {
+    const h = await fixture();
+    const a = (await h.prepare()).approval;
+    if (!a) throw new Error("Missing challenge");
+    const oldDigest = (
+      JSON.parse(a.approvalStatementCanonical) as { integrity: { candidateFingerprint: string } }
+    ).integrity.candidateFingerprint;
+    const current = await h.pendingStore.load(a.requestId);
+    if (!current) throw new Error("Missing pending");
+    const legacy = await h.pendingStore.prepare({ ...current, requestDigest: oldDigest });
+    expect(await h.execute(legacy.requestId, await h.signRequest(legacy.requestId))).toMatchObject({
+      outcome: "approval_mismatch",
+      error: { code: "APPROVAL_STATEMENT_REQUIRED" },
+    });
+    expect(await h.pendingStore.state(legacy.requestId)).toBe("pending");
+    expect(h.claimExists(legacy.requestId)).toBe(false);
+    expect(h.consumptions()).toBe(0);
+    expect(Object.values(h.calls).every((n) => n === 0)).toBe(true);
+  });
+  it("Stage4B.1 exposes named recovery, snapshot fingerprint, unknowns and cleanup flags", async () => {
+    const h = await fixture({ prefix: 3, observed: "prior" });
+    const prepared = await h.prepare();
+    const a = prepared.approval;
+    expect(a?.approvalStatementCanonical).toEqual(expect.any(String));
+    if (!a) throw new Error("Missing challenge");
+    expect(JSON.parse(a.approvalStatementCanonical)).toMatchObject({
+      statementVersion: 1,
+      operation: "reconcile_commit",
+      toolName: "releases.reconcile_commit",
+      permission: "destructive",
+      packageName: h.packageName,
+      facts: {
+        targetTrack: "internal",
+        versionCode: "42",
+        releaseName: "Candidate",
+        releaseStatus: "completed",
+        attemptId: h.attemptId,
+        attemptState: "TRANSPORT_ATTEMPTED",
+        mode: "verify_expired",
+        observedClassification: "prior_state",
+        originalEditStatus: "not_yet_probed",
+        verificationInsertAttempted: true,
+        temporaryEditIdentityAvailable: true,
+        verificationDeleteAttempted: false,
+        verificationCleanupVerified: false,
+      },
+      integrity: { candidateFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/u) },
+    });
+    expect(a.approvalStatementCanonical).toContain("never delete the original");
+    expect(a.approvalStatementCanonical).toContain("Prior or unrelated");
+    expect(a.approvalStatementCanonical).not.toContain("PRIVATE-ORIGINAL-EDIT");
+    expect(a.approvalStatementCanonical).not.toContain("PRIVATE-VERIFICATION-EDIT");
+    const verified = validateSerializedApproval(JSON.stringify(a));
+    expect(
+      (await h.execute(a.requestId, h.signChallenge(verified.bytesToSign.toString("utf8"))))
+        .outcome,
+    ).toBe("external_state_ambiguous");
+    expect(h.calls.createEdit).toBe(0);
+    expect(h.calls.deleteEdit).toBe(1);
+    expect(h.calls.commitEdit).toBe(0);
+  });
+
   it("reports reconciliation_not_required without a pending request, claim, approval or Google when no unresolved attempt exists", async () => {
     const h = await fixture({ state: "none" });
     expect(await h.prepare()).toMatchObject({

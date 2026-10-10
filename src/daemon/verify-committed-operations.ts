@@ -36,6 +36,7 @@
  * journal-mutating or remotely-mutating step and is released LAST, after the
  * daemon pending settlement and the request-claim release.
  */
+import { isLegacyOpaqueApproval } from "../approvals/statement.js";
 import { epochSecondsFromDate, normalizeReleaseVersionCode } from "../releases/index.js";
 import {
   createCommitVerificationEvidenceJournalSink,
@@ -84,6 +85,7 @@ import type {
 import {
   approvalChallengeFor,
   approvalPayloadFor,
+  preflightApprovalResponse,
   envelope,
   outcomeForNonPendingState,
 } from "./pending-view.js";
@@ -712,6 +714,18 @@ export async function prepareVerifyCommitted(
   }
 
   const binding = createReleaseStateVerificationApprovalBinding(intent);
+  const refused = preflightApprovalResponse(
+    correlationId,
+    binding.createSafeSummary({}),
+    binding.approvalStatementCanonical,
+    {
+      toolName: RELEASES_VERIFY_COMMITTED_RELEASE_TOOL_NAME,
+      permission: binding.permission,
+      packageName: deps.packageName,
+      requestDigest: binding.createRequestDigest({}),
+    },
+  );
+  if (refused) return refused;
   let record: PendingOperationRecord;
   try {
     record = await deps.pendingStore.prepare({
@@ -736,7 +750,7 @@ export async function prepareVerifyCommitted(
 
   return envelope(correlationId, "approval_required", {
     summary: binding.createSafeSummary({}),
-    approval: approvalChallengeFor(record),
+    approval: approvalChallengeFor(record, binding.approvalStatementCanonical),
   });
 }
 
@@ -882,9 +896,17 @@ export async function executeVerifyCommitted(
     // ---------- the approval must still describe the exact durable attempt ----------
     let freshDigest: string;
     try {
-      freshDigest = createReleaseStateVerificationApprovalBinding(
+      const freshBinding = createReleaseStateVerificationApprovalBinding(
         verificationIntentFromJournal(journalRecord),
-      ).createRequestDigest({});
+      );
+      if (isLegacyOpaqueApproval(record.requestDigest, freshBinding.approvalStatementCanonical))
+        return failure(
+          correlationId,
+          "approval_mismatch",
+          "APPROVAL_STATEMENT_REQUIRED",
+          "A new human-verifiable approval statement and signature are required.",
+        );
+      freshDigest = freshBinding.createRequestDigest({});
     } catch (cause) {
       return failure(
         correlationId,

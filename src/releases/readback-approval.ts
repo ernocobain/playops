@@ -20,6 +20,11 @@
  */
 import { createHash } from "node:crypto";
 import {
+  APPROVAL_CONSEQUENCES,
+  approvalStatementDigest,
+  canonicalApprovalStatement,
+} from "../approvals/statement.js";
+import {
   normalizeReleaseVersionCode,
   RELEASE_STATUSES,
   ReleaseError,
@@ -92,6 +97,7 @@ export interface ReleaseStateVerificationIntentInput {
 
 export interface ReleaseStateVerificationApprovalBinding {
   readonly permission: "destructive";
+  readonly approvalStatementCanonical: string;
   readonly createRequestDigest: (validatedInput: unknown) => string;
   readonly createSafeSummary: (validatedInput: unknown) => string;
 }
@@ -243,9 +249,7 @@ export function createReleaseStateVerificationIntent(
  * durable commit-state digest, so it can never collide with the retired
  * Phase 4.11 field-comparison domain (different version and operation kind).
  */
-export function createReleaseStateVerificationRequestDigest(
-  intent: ReleaseStateVerificationIntent,
-): string {
+function verificationBindingFingerprint(intent: ReleaseStateVerificationIntent): string {
   return digest({
     expectedReleaseName: intent.expectedReleaseName,
     expectedStateDigest: intent.expectedStateDigest,
@@ -257,18 +261,52 @@ export function createReleaseStateVerificationRequestDigest(
   });
 }
 
+export function createReleaseStateVerificationStatement(
+  intent: ReleaseStateVerificationIntent,
+): string {
+  return canonicalApprovalStatement({
+    statementVersion: 1,
+    operation: "verify_committed",
+    toolName: RELEASES_VERIFY_COMMITTED_RELEASE_TOOL_NAME,
+    permission: "destructive",
+    packageName: intent.packageName,
+    facts: {
+      targetTrack: intent.targetTrack,
+      versionCode: intent.versionCode,
+      expectedReleaseName: intent.expectedReleaseName,
+      archivedNoteTextAvailable: false,
+    },
+    integrity: {
+      expectedStateDigest: intent.expectedStateDigest,
+      verificationBindingFingerprint: verificationBindingFingerprint(intent),
+    },
+    consequences: APPROVAL_CONSEQUENCES.verify_committed,
+  });
+}
+export function createReleaseStateVerificationRequestDigest(
+  intent: ReleaseStateVerificationIntent,
+): string {
+  return approvalStatementDigest(createReleaseStateVerificationStatement(intent));
+}
+
 /** Separate destructive approval; it never authorizes commit, publish, or notes. */
 export function createReleaseStateVerificationApprovalBinding(
   intent: ReleaseStateVerificationIntent,
 ): ReleaseStateVerificationApprovalBinding {
-  const requestDigest = createReleaseStateVerificationRequestDigest(intent);
+  const approvalStatementCanonical = createReleaseStateVerificationStatement(intent);
+  const requestDigest = approvalStatementDigest(approvalStatementCanonical);
+  const visible = JSON.parse(approvalStatementCanonical) as {
+    packageName: string;
+    facts: ReleaseStateVerificationIntent;
+    integrity: { expectedStateDigest: string };
+  };
   const summary = [
     "DESTRUCTIVE read-back verification of the committed Google Play release state.",
-    `App: ${intent.packageName}`,
-    `Track: ${intent.targetTrack}`,
-    `Version: ${intent.versionCode}`,
-    `Expected release: ${intent.expectedReleaseName}`,
-    `Expected committed-state digest: ${intent.expectedStateDigest}`,
+    `App: ${visible.packageName}`,
+    `Track: ${visible.facts.targetTrack}`,
+    `Version: ${visible.facts.versionCode}`,
+    `Expected release: ${visible.facts.expectedReleaseName}`,
+    `Expected committed-state digest: ${visible.integrity.expectedStateDigest}`,
     "Success requires the observed committed track state to digest-match that durable expected digest exactly; no release-note or rollout-fraction comparison is performed.",
     "A temporary Google Play edit will be created only to inspect the exact Track state.",
     "Creating this edit may invalidate another active edit owned by this API user for the same application.",
@@ -278,6 +316,7 @@ export function createReleaseStateVerificationApprovalBinding(
   ].join("\n");
   return Object.freeze({
     permission: "destructive" as const,
+    approvalStatementCanonical,
     createRequestDigest: () => requestDigest,
     createSafeSummary: () => summary,
   });

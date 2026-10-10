@@ -16,9 +16,19 @@
  * records, Google call counts) rather than about mocks agreeing with each other.
  */
 import { generateKeyPairSync, sign, type KeyObject } from "node:crypto";
-import { chmodSync, existsSync, mkdtempSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { validateSerializedApproval } from "./approval-statement-reference.js";
 import { afterEach, describe, expect, it } from "vitest";
 import { readAuditEntries } from "../src/audit/index.js";
 import type { DaemonAttachNotesDependencies } from "../src/daemon/attach-notes.js";
@@ -567,6 +577,65 @@ async function buildHarness(options: HarnessOptions = {}): Promise<Harness> {
 }
 
 describe("daemon verify_committed: prepare authority", () => {
+  it("Stage4B.1 refuses an oversized verification summary before new pending prepare", async () => {
+    const h = await buildHarness();
+    const old = await h.pendingStore.list();
+    const journal = JSON.parse(readFileSync(h.journalPath, "utf8")) as {
+      records: { releaseName: string }[];
+    };
+    const candidate = journal.records[0];
+    if (!candidate) throw new Error("Missing journal");
+    candidate.releaseName = "é".repeat(2000);
+    writeFileSync(h.journalPath, JSON.stringify(journal));
+    for (const p of old)
+      if (p.intent.kind === "commit") {
+        const path = join(h.dir, "pending", `${p.requestId}.json`);
+        writeFileSync(
+          path,
+          JSON.stringify({ ...p, intent: { ...p.intent, releaseName: candidate.releaseName } }),
+        );
+      }
+    expect(await h.prepareVerify()).toMatchObject({
+      outcome: "local_state_failure",
+      error: { code: "APPROVAL_CHALLENGE_UNDELIVERABLE" },
+    });
+    expect((await h.pendingStore.list()).length).toBe(old.length);
+    expect(Object.values(h.calls).every((n) => n === 0)).toBe(true);
+  });
+  it("Stage4B.1 exposes named read-back authority and honest temporary-edit consequences", async () => {
+    const h = await buildHarness();
+    const prepared = await h.prepareVerify();
+    expect(prepared.outcome).toBe("approval_required");
+    const a = prepared.approval;
+    expect(a?.approvalStatementCanonical).toEqual(expect.any(String));
+    if (!a) throw new Error("Missing challenge");
+    const statement = JSON.parse(a.approvalStatementCanonical) as unknown;
+    expect(statement).toMatchObject({
+      statementVersion: 1,
+      operation: "verify_committed",
+      toolName: "releases.verify_committed_release",
+      permission: "destructive",
+      packageName: PACKAGE,
+      facts: {
+        targetTrack: TRACK,
+        versionCode: VERSION_CODE,
+        expectedReleaseName: RELEASE_NAME,
+        archivedNoteTextAvailable: false,
+      },
+      integrity: { expectedStateDigest: EXPECTED_DIGEST },
+    });
+    expect(a.approvalStatementCanonical).toContain("at most one temporary");
+    expect(a.approvalStatementCanonical).toContain("identity guard");
+    expect(a.approvalStatementCanonical).toContain("No commit");
+    expect(a.approvalStatementCanonical).toContain("not available");
+    const verified = validateSerializedApproval(JSON.stringify(a));
+    const signature = sign(null, verified.bytesToSign, h.privateKey).toString("base64url");
+    expect((await h.executeVerify(a.requestId, signature)).outcome).toBe("success");
+    expect(h.calls.createEdit).toBe(1);
+    expect(h.calls.deleteEdit).toBe(1);
+    expect(h.calls.commitEdit).toBe(0);
+  });
+
   it("offers a destructive Stage-3E.1 challenge bound to the durable ACK attempt", async () => {
     const harness = await buildHarness();
     const response = await harness.prepareVerify();
@@ -1139,6 +1208,29 @@ describe("daemon verify_committed: concurrent destructive approval", () => {
 });
 
 describe("daemon verify_committed: approval drift", () => {
+  it("Stage4B.1 refuses a valid legacy opaque verify approval before destructive work", async () => {
+    const h = await buildHarness();
+    const a = (await h.prepareVerify()).approval;
+    if (!a) throw new Error("Missing challenge");
+    const oldDigest = (
+      JSON.parse(a.approvalStatementCanonical) as {
+        integrity: { verificationBindingFingerprint: string };
+      }
+    ).integrity.verificationBindingFingerprint;
+    const current = await h.pendingStore.load(a.requestId);
+    if (!current) throw new Error("Missing pending");
+    const legacy = await h.pendingStore.prepare({ ...current, requestDigest: oldDigest });
+    expect(
+      await h.executeVerify(legacy.requestId, await h.signRequest(legacy.requestId)),
+    ).toMatchObject({
+      outcome: "approval_mismatch",
+      error: { code: "APPROVAL_STATEMENT_REQUIRED" },
+    });
+    expect(await h.pendingStore.state(legacy.requestId)).toBe("pending");
+    expect(h.claimExists(legacy.requestId)).toBe(false);
+    expect(h.approvalConsumptions()).toBe(0);
+    expect(Object.values(h.calls).every((n) => n === 0)).toBe(true);
+  });
   it("refuses a stale approval whose digest no longer matches the journal", async () => {
     const harness = await buildHarness();
     // A stale approval: signed for a different expected digest than the durable
