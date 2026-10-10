@@ -1,0 +1,77 @@
+# PlayOps production configuration example (`playopsd`).
+#
+# This is the operator-safe production template for the release daemon. It is a
+# TEMPLATE ONLY: the repository creates nothing, provisions no host path and
+# installs no service. Copy it to an administrator-owned
+# /etc/playops/playops.yaml and fill in the site-specific values. See
+# docs/deployment-production.md for the full deployment contract.
+#
+# It carries NO secret material and NO host identity: every credential is a
+# path and the package name below is a placeholder. Never commit a real
+# service-account JSON, private key, OAuth token or any host-specific path.
+#
+# Filesystem and privilege model this template assumes (all administrator-owned):
+#   - /etc/playops                       root:playops 0750
+#   - /etc/playops/playops.yaml          root:playops 0640  (this file)
+#   - /etc/playops/credentials           root:playops 0750
+#   - /etc/playops/credentials/*.json    root:playops 0640
+#   - /etc/playops/operator-approval.pub root:root    0644  (public anchor)
+#
+# (a) Every path below is ABSOLUTE and the daemon refuses a relative, empty,
+#     control-bearing or dot-segment-escaping path with a typed startup failure;
+#     nothing is resolved against the current directory, a user home or a
+#     checkout. This also holds for the `--config` path itself.
+# (c) PRE-PROVISIONING CONTRACT: the three 0700 state directories
+#     (/var/lib/playops/{pending,claims,write-intents}) AND the exactly-0700
+#     release-authority parent /var/lib/playops/release must ALREADY EXIST
+#     before the first start, owned by the daemon account. /run/playops,
+#     /var/lib/playops and /var/log/playops are systemd-owned
+#     (RuntimeDirectory/StateDirectory/LogsDirectory); the nested state
+#     directories and the release parent are provisioned by
+#     deploy/tmpfiles.d/playops.conf. The daemon NEVER creates, chmods or
+#     re-permissions any of these paths; a missing or wrongly-moded directory is
+#     a fail-closed startup error, not something it repairs.
+# (d) The service_account_json below must be a NEW production credential that was
+#     never readable by the automation-controlled operator account. Do NOT copy
+#     the old development credential; generate a fresh one and install it only
+#     under /etc/playops/credentials.
+# (e) Install NO production secret until the independent-administrator handoff
+#     and the operator privilege removal are complete: the operator account must
+#     not be a member of an escalation group (for example sudo/disk) and must not
+#     be the only administrator.
+# (f) The production Node 24 runtime is installed and verified by an administrator
+#     at /opt/playops/node24. PlayOps ships no Node binaries, and a user-owned or
+#     version-manager runtime must not be used in production.
+
+google_play:
+  # Replace with the operated app's package name (an example com.* value). The
+  # daemon validates it with the package-name rule used by the developer example
+  # (config/playops.example.yaml) and refuses an invalid one at startup.
+  package_name: "<package-name>"
+  service_account_json: "/etc/playops/credentials/google-play.json"
+
+# Audit log (`PLAYOPS_AUDIT_LOG_PATH`). Deployment owns /var/log/playops
+# (0700, playops:playops-operator); the audit file is created 0600.
+audit:
+  log_path: "/var/log/playops/playops.audit.jsonl"
+
+# Release-authority durable files. Each is a private 0600 regular file; their
+# shared parent /var/lib/playops/release must be exactly 0700 before first start.
+release:
+  edit_session_path: "/var/lib/playops/release/edit-session.json"
+  edit_cleanup_journal_path: "/var/lib/playops/release/edit-cleanup-journal.json"
+  commit_attempt_journal_path: "/var/lib/playops/release/commit-attempt-journal.json"
+
+# Production daemon paths.
+daemon:
+  socket_path: "/run/playops/playops.sock"
+  pending_store_path: "/var/lib/playops/pending"
+  claim_root: "/var/lib/playops/claims"
+  write_intent_store_path: "/var/lib/playops/write-intents"
+
+# This file deliberately OMITS the `llm` section: the production daemon path
+# never consumes an LLM provider, so the least-secret production configuration
+# leaves it out entirely.
+#
+# It also deliberately OMITS `review.checkpoint_path`: the daemon does not read
+# it, so including it would create an extra privileged state path for nothing.

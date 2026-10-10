@@ -37,6 +37,7 @@ describe("Phase 6.1 CLI-only distribution contract", () => {
     expect(metadata.files).toEqual([
       "dist/**/*.js",
       "config/playops.example.yaml",
+      "config/playops.production.example.yaml",
       "CHANGELOG.md",
       "docs/credentials.md",
       "docs/permissions-and-approvals.md",

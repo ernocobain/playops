@@ -1,5 +1,6 @@
 import { formatDoctorReport, runDoctor, type DoctorDeps } from "../doctor/doctor.js";
 import { createLiveReviewComposition } from "../reviews/composition.js";
+import { readInstalledPackageVersion } from "../shared/package-version.js";
 import { runDaemonCli, type DaemonCliDeps, type DaemonCliIo } from "./daemon.js";
 import { runReviewsCli, type ReviewCliIo, type ReviewCompositionFactory } from "./reviews.js";
 import { runReleasesCli, type ReleaseDryRunCliDeps, type ReleaseDryRunCliIo } from "./releases.js";
@@ -73,10 +74,18 @@ export async function runCli(
     return report.exitCode;
   }
 
+  if ((command === "--version" || command === "-v") && args.length === 1) {
+    // The installed manifest is the single source of truth: never cwd, never the
+    // environment. Mirrors the `playopsd --version` surface.
+    output.log(`playops ${readInstalledPackageVersion() ?? "unknown"}`);
+    return 0;
+  }
+
   if ((command === "--help" || command === "-h" || command === undefined) && args.length <= 1) {
     output.log(
       [
         "Usage: playops <command>",
+        "       playops --version",
         "",
         "Commands:",
         "  doctor    Verify config, credentials, and Google Play connectivity (read-only)",

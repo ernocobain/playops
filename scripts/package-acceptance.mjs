@@ -611,6 +611,254 @@ registerHooks({ resolve(specifier, context, nextResolve) {
     traceLines(trace).length === networkBefore && !existsSync(join(workdir, "playops.sock")),
   );
 
+  // ---------------------- Stage 4C.4 release identity + provisioning readiness
+  check(
+    "candidate tree declares the 0.4.0 release version",
+    sourcePkg.version === "0.4.0",
+    sourcePkg.version,
+  );
+  check(
+    "installed playops package version is 0.4.0",
+    installedMetadata.version === "0.4.0",
+    installedMetadata.version,
+  );
+  check(
+    "installed playopsd --version prints 0.4.0",
+    daemonVersion.status === 0 && daemonVersion.stdout === "playopsd 0.4.0\n",
+    daemonVersion.stdout,
+  );
+  // Stage 4C.4: the operator CLI has its own version surface and must keep the
+  // same no-network, no-socket guarantee as the daemon's.
+  const cliEntryPath = join(installed, "dist", "cli", "index.js");
+  const cliTraceBefore = traceLines(trace).length;
+  const cliVersionProbe = capture(
+    process.execPath,
+    ["--import", blocker, cliEntryPath, "--version"],
+    { cwd: workdir, env: cliEnv },
+  );
+  check(
+    "installed playops --version prints the packaged version and exits 0",
+    cliVersionProbe.status === 0 && /^playops \d+\.\d+\.\d+\n$/u.test(cliVersionProbe.stdout),
+    cliVersionProbe.stdout,
+  );
+  check(
+    "installed playops --version prints 0.4.0",
+    cliVersionProbe.status === 0 && cliVersionProbe.stdout === "playops 0.4.0\n",
+    cliVersionProbe.stdout,
+  );
+  check(
+    "installed playops --version neither opens a socket nor calls the network",
+    traceLines(trace).length === cliTraceBefore,
+  );
+  const protocolProbe = capture(
+    process.execPath,
+    [
+      "--input-type=module",
+      "-e",
+      `import(${JSON.stringify(
+        pathToFileURL(join(installed, "dist", "daemon", "protocol.js")).href,
+      )}).then((m) => process.stdout.write(String(m.PLAYOPS_DAEMON_PROTOCOL_VERSION)))`,
+    ],
+    { cwd: consumer, env: cliEnv },
+  );
+  check(
+    "installed daemon wire protocol is version 5",
+    protocolProbe.status === 0 && protocolProbe.stdout.trim() === "5",
+    `${protocolProbe.stdout}${protocolProbe.stderr}`.slice(0, 200),
+  );
+
+  // The production configuration example must ship, be complete and stay secret-free.
+  const productionExamplePath = join(installed, "config", "playops.production.example.yaml");
+  const productionExample = existsSync(productionExamplePath)
+    ? readFileSync(productionExamplePath, "utf8")
+    : "";
+  check("payload ships the production configuration example", productionExample.length > 0);
+  const mandatoryProductionKeys = [
+    "google_play:",
+    "package_name:",
+    "service_account_json:",
+    "audit:",
+    "log_path:",
+    "release:",
+    "edit_session_path:",
+    "edit_cleanup_journal_path:",
+    "commit_attempt_journal_path:",
+    "daemon:",
+    "socket_path:",
+    "pending_store_path:",
+    "claim_root:",
+    "write_intent_store_path:",
+  ];
+  check(
+    "production configuration example declares every mandatory field",
+    mandatoryProductionKeys.every((key) => productionExample.includes(key)),
+  );
+  const productionPaths = [...productionExample.matchAll(/"(\/[^"\n]*)"/gu)].map(
+    (match) => match[1],
+  );
+  check(
+    "production configuration example declares only absolute paths",
+    productionPaths.length >= 9 && productionPaths.every((path) => path.startsWith("/")),
+  );
+  check(
+    "production configuration example carries no secret material or host identity",
+    !/-----BEGIN [A-Z ]*PRIVATE KEY-----/u.test(productionExample) &&
+      !/"(?:private_key|client_email|client_secret|refresh_token)"\s*:/u.test(productionExample) &&
+      !/\bya29\.[A-Za-z0-9_-]+/u.test(productionExample) &&
+      !/\/home\//u.test(productionExample) &&
+      !/\bnvm\b/iu.test(productionExample) &&
+      !/dhikrama|surface/iu.test(productionExample),
+  );
+
+  const installedTmpfiles = readFileSync(
+    join(installed, "deploy", "tmpfiles.d", "playops.conf"),
+    "utf8",
+  );
+  check(
+    "tmpfiles template provisions the release-authority directory",
+    /^d \/var\/lib\/playops\/release 0700 playops playops-operator -$/mu.test(installedTmpfiles),
+  );
+
+  // Stale production `0600` claims must be gone from the shipped payload. Release
+  // history (CHANGELOG.md) legitimately still mentions the historical mode.
+  const stalePhrases = [
+    "the `0600` transport limitation remain blocked",
+    "bind owner-only socket",
+    "the transport is a plain `0600` Unix socket",
+    "There is no peer-credential check and no group `0660` transport",
+    "Owner-only (0600) Unix socket the daemon binds",
+  ];
+  const payloadTextFiles = installedFiles.filter(
+    (path) => (path.endsWith(".md") || path.endsWith(".yaml")) && path !== "CHANGELOG.md",
+  );
+  const staleOffenders = payloadTextFiles.filter((path) =>
+    stalePhrases.some((phrase) => readFileSync(join(installed, path), "utf8").includes(phrase)),
+  );
+  check(
+    "no shipped document carries a stale production owner-only / 0600 claim",
+    staleOffenders.length === 0,
+    staleOffenders.join(", "),
+  );
+  const installedExample = readFileSync(join(installed, "config", "playops.example.yaml"), "utf8");
+  check(
+    "installed config example no longer claims an owner-only production socket",
+    !installedExample.includes("binds an owner-only (0600) socket") &&
+      installedExample.includes("0660"),
+  );
+
+  // The socket allow-list and the production mode are pinned by installed code.
+  const socketPolicyProbe = capture(
+    process.execPath,
+    [
+      "--input-type=module",
+      "-e",
+      `const s = await import(${JSON.stringify(
+        pathToFileURL(join(installed, "dist", "daemon", "server.js")).href,
+      )});` +
+        `const c = await import(${JSON.stringify(
+          pathToFileURL(join(installed, "dist", "daemon", "production-composition.js")).href,
+        )});` +
+        `process.stdout.write(JSON.stringify([s.DAEMON_SOCKET_MODES, s.DEFAULT_DAEMON_SOCKET_MODE, c.PRODUCTION_DAEMON_SOCKET_MODE]));`,
+    ],
+    { cwd: consumer, env: cliEnv },
+  );
+  let socketPolicy = null;
+  try {
+    socketPolicy = JSON.parse(socketPolicyProbe.stdout);
+  } catch {
+    socketPolicy = null;
+  }
+  check(
+    "installed socket allow-list is exactly {0600,0660} with 0660 as the production mode",
+    Array.isArray(socketPolicy) &&
+      JSON.stringify(socketPolicy[0]) === JSON.stringify([0o600, 0o660]) &&
+      socketPolicy[1] === 0o600 &&
+      socketPolicy[2] === 0o660,
+    String(socketPolicyProbe.stdout).slice(0, 120),
+  );
+
+  // The secret-file policies and the systemd unit must stay unchanged in substance.
+  const installedUnit = readFileSync(
+    join(installed, "deploy", "systemd", "playops.service"),
+    "utf8",
+  );
+  check(
+    "installed systemd unit keeps its identity, paths and hardening",
+    [
+      "User=playops",
+      "Group=playops-operator",
+      "SupplementaryGroups=playops",
+      "ExecStart=/opt/playops/node24/bin/node /opt/playops/current/dist/daemon/main.js --config /etc/playops/playops.yaml",
+      "ProtectSystem=strict",
+      "NoNewPrivileges=yes",
+      "CapabilityBoundingSet=",
+    ].every((directive) => installedUnit.includes(directive)),
+  );
+  const policyProbe = capture(
+    process.execPath,
+    [
+      "--input-type=module",
+      "-e",
+      `const t = await import(${JSON.stringify(
+        pathToFileURL(join(installed, "dist", "shared", "fs-trust.js")).href,
+      )});` +
+        `const s = t.secretServiceFilePolicy();` +
+        `const p = t.publicIntegrityFilePolicy();` +
+        `process.stdout.write(JSON.stringify([s.secretConfidentiality, p.secretConfidentiality === undefined, t.SECRET_SERVICE_ALLOWED_MODES]));`,
+    ],
+    { cwd: consumer, env: cliEnv },
+  );
+  let policy = null;
+  try {
+    policy = JSON.parse(policyProbe.stdout);
+  } catch {
+    policy = null;
+  }
+  check(
+    "installed secret-file policies are unchanged in substance",
+    Array.isArray(policy) &&
+      policy[0] === true &&
+      policy[1] === true &&
+      Array.isArray(policy[2]) &&
+      policy[2].length === 2,
+    String(policyProbe.stdout).slice(0, 120),
+  );
+
+  // The payload must contain no private key, credential, host path or NVM reference.
+  const forbiddenPayloadPatterns = [
+    [/-----BEGIN [A-Z ]*PRIVATE KEY-----/u, "a private key"],
+    [/"(?:private_key|client_email|client_secret|refresh_token)"\s*:/u, "credential JSON fields"],
+    [/\bya29\.[A-Za-z0-9_-]+/u, "an OAuth access token"],
+    [/\/home\//u, "an absolute home path"],
+  ];
+  const payloadViolations = [];
+  const payloadScannable = installedFiles.filter(
+    (path) =>
+      path.endsWith(".js") ||
+      path.endsWith(".md") ||
+      path.endsWith(".yaml") ||
+      path.endsWith(".json") ||
+      path === "LICENSE",
+  );
+  for (const path of payloadScannable) {
+    const text = readFileSync(join(installed, path), "utf8");
+    for (const [pattern, description] of forbiddenPayloadPatterns) {
+      if (pattern.test(text)) payloadViolations.push(`${path} contains ${description}`);
+    }
+  }
+  // NVM references are rejected in runtime code only: the deployment guide
+  // deliberately explains that NVM is development-only.
+  for (const path of installedFiles.filter((p) => p.startsWith("dist/") && p.endsWith(".js"))) {
+    if (/\bnvm\b/iu.test(readFileSync(join(installed, path), "utf8"))) {
+      payloadViolations.push(`${path} references NVM`);
+    }
+  }
+  check(
+    "payload contains no private key, credential, host path or NVM runtime reference",
+    payloadViolations.length === 0,
+    payloadViolations.slice(0, 5).join(", "),
+  );
+
   const noConfig = blocked(["doctor"]);
   let diagnostic = null;
   try {

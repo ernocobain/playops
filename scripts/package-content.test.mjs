@@ -22,6 +22,7 @@ const metadata = () => ({
   files: [
     "dist/**/*.js",
     "config/playops.example.yaml",
+    "config/playops.production.example.yaml",
     "CHANGELOG.md",
     ...OPERATOR_DOC_FILES,
     ...DEPLOYMENT_TEMPLATE_GLOBS,

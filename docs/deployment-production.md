@@ -100,6 +100,7 @@ first.
 | `/var/lib/playops/pending`       | `playops:playops-operator` | `0700` |
 | `/var/lib/playops/claims`        | `playops:playops-operator` | `0700` |
 | `/var/lib/playops/write-intents` | `playops:playops-operator` | `0700` |
+| `/var/lib/playops/release`       | `playops:playops-operator` | `0700` |
 | durable state files              | `playops:playops-operator` | `0600` |
 | `/var/log/playops`               | `playops:playops-operator` | `0700` |
 | audit log file                   | `playops:playops-operator` | `0600` |
@@ -114,6 +115,10 @@ state-tree size and the Google quota from the admin path) rather than in-daemon.
 - Configuration: `/etc/playops/playops.yaml`, owned `root:playops` mode `0640`,
   inside `/etc/playops` owned `root:playops` mode `0750`. The daemon reads it
   through the supplementary `playops` group; the operator cannot read or write it.
+  A ready-to-adapt production template ships in the package as
+  `config/playops.production.example.yaml`; it declares only absolute paths, omits
+  the unused `llm` section and the unused `review.checkpoint_path`, and provisions
+  nothing by itself.
 - Trust anchor: `/etc/playops/operator-approval.pub`, owned `root:root` mode
   `0644`. It is public key material: anchor confidentiality is intentionally
   **not** required. It is validated as a regular root-owned file with no
@@ -178,8 +183,11 @@ network available for Google APIs.
 
 ## tmpfiles ownership split
 
-`deploy/tmpfiles.d/playops.conf` owns only the three nested state directories,
-because systemd's directory options do not cover them. Installing it is an
+`deploy/tmpfiles.d/playops.conf` owns only the nested directories systemd's
+directory options do not cover: the three nested `0700` state directories
+(`pending`, `claims`, `write-intents`) and the exactly-`0700` release-authority
+parent `/var/lib/playops/release` that holds the private release state files
+(edit session, edit cleanup journal, commit-attempt journal). Installing it is an
 administrator action: copy it into `/etc/tmpfiles.d/` and let
 `systemd-tmpfiles-setup.service` create the directories before the unit starts.
 `/run/playops`, `/var/lib/playops` and `/var/log/playops` stay owned by systemd
@@ -200,7 +208,7 @@ and are intentionally absent from the tmpfiles file.
 | `/etc/playops/credentials/google-play.json` | RW         | R         | -        | R               | -                        |
 | `/run/playops`                              | RWX        | RWX       | R-X      | -               | R-X                      |
 | `/run/playops/playops.sock`                 | RWX        | RWX       | RW       | -               | RW                       |
-| `/var/lib/playops` and its three subdirs    | RWX        | RWX       | -        | -               | -                        |
+| `/var/lib/playops` and its four subdirs     | RWX        | RWX       | -        | -               | -                        |
 | `/var/log/playops`                          | RWX        | RWX       | -        | -               | -                        |
 
 The operator has no traverse on `/etc/playops` (mode `0750`, group `playops`), so the

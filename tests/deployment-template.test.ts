@@ -118,7 +118,7 @@ describe("stage 4C.1 deployment templates", () => {
     }
   });
 
-  it("tmpfiles owns exactly the three nested 0700 state directories and nothing else", () => {
+  it("tmpfiles owns exactly the four nested 0700 state directories and nothing else", () => {
     const directives = tmpfilesText
       .split("\n")
       .map((line) => line.trim())
@@ -127,6 +127,7 @@ describe("stage 4C.1 deployment templates", () => {
       "d /var/lib/playops/pending 0700 playops playops-operator -",
       "d /var/lib/playops/claims 0700 playops playops-operator -",
       "d /var/lib/playops/write-intents 0700 playops playops-operator -",
+      "d /var/lib/playops/release 0700 playops playops-operator -",
     ]);
     expect(tmpfilesText).not.toMatch(/^d\s+\/run/imu);
     expect(tmpfilesText).not.toMatch(/^d\s+\/var\/lib\/playops\s/imu);

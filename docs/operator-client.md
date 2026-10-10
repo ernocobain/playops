@@ -1,10 +1,11 @@
 # Operator client (`playops daemon`)
 
 This guide documents the operator-facing client for the local PlayOps release
-daemon. It is **not production-ready**: the transport is a plain `0600` Unix
-socket, deployment and privilege separation are still blocked, and the operator
-path has only offline/fake-service acceptance. Treat it as the framing and UX
-layer over a frozen protocol, not as a deployed operator tool.
+daemon. It is **not deployed**: the transport is the production `0660`
+capability-group Unix socket, and deployment, provisioning and privilege
+separation are still blocked, so the operator path has only offline/fake-service
+acceptance. Treat it as the framing and UX layer over a frozen protocol, not as
+a deployed operator tool.
 
 ## Command hierarchy
 
@@ -161,11 +162,13 @@ pending-state counts. These counts **cannot resolve a specific requestId**, and
 status is **not** recovery: never infer a specific success or failure from it
 alone.
 
-## Transport limitation and deployment status
+## Transport and deployment status
 
-The daemon socket is a plain `0600` Unix socket owned by the daemon's Unix
-account. There is no peer-credential check and no group `0660` transport, so a
-distinct operator user cannot currently connect; the client cannot guarantee
+The production daemon socket is the `0660` capability-group mode owned by the
+daemon's Unix account (`playops:playops-operator`), so a member of the
+`playops-operator` capability group can connect; `0600` remains the owner-only
+tests/development mode. Node exposes no peer-credential check, so the daemon
+cannot attribute a request to a specific user and the client cannot guarantee
 display correctness against an attacker in the same Unix account. Deployment,
 systemd integration, privilege separation and R6A remain blocked. Acceptance
 runs a stub/fixture daemon rather than a production composition, because a

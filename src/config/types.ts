@@ -69,7 +69,13 @@ export interface ReleaseConfig {
  * directories: the daemon validates them and never creates /etc, /var or /run.
  */
 export interface DaemonConfig {
-  /** Owner-only (0600) Unix socket the daemon binds. */
+  /**
+   * Unix socket the daemon binds. Accepted modes are the exact allow-list
+   * `{0600, 0660}`: `0600` is owner-only (tests/development), while `0660` is
+   * the production capability-group mode owned `playops:playops-operator`. The
+   * mode is a production composition constant — it is not settable from this
+   * configuration.
+   */
   socketPath: string;
   /** Private 0700 directory holding pending approval records. */
   pendingStorePath: string;

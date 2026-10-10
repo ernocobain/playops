@@ -48,6 +48,7 @@ export const ROOT_PAYLOAD_FILES = Object.freeze([
   "CHANGELOG.md",
   "LICENSE",
   "config/playops.example.yaml",
+  "config/playops.production.example.yaml",
 ]);
 
 /**
@@ -73,6 +74,7 @@ export const APPROVED_PACKAGE_FIELDS = Object.freeze({
   files: Object.freeze([
     "dist/**/*.js",
     "config/playops.example.yaml",
+    "config/playops.production.example.yaml",
     "CHANGELOG.md",
     ...OPERATOR_DOC_FILES,
     ...DEPLOYMENT_TEMPLATE_GLOBS,

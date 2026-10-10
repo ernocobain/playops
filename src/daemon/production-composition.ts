@@ -42,10 +42,9 @@
  *     pending/claim/write-intent roots) fails at startup instead of exposing a
  *     partially-wired production daemon.
  */
-import { constants as fsConstants, readFileSync, type Stats } from "node:fs";
+import { constants as fsConstants, type Stats } from "node:fs";
 import { access, lstat } from "node:fs/promises";
 import { isAbsolute, sep } from "node:path";
-import { fileURLToPath } from "node:url";
 import {
   loadConfig,
   loadServiceAccountCredentials,
@@ -71,6 +70,7 @@ import {
 import { createFileVerificationLedger } from "../runtime/verification/index.js";
 import { createReleaseComposition, type ReleaseComposition } from "../releases/composition.js";
 import { ReleaseError, validateReleasePackageName } from "../releases/index.js";
+import { readInstalledPackageVersion } from "../shared/package-version.js";
 import { createFileReleaseCommitAttemptJournal } from "../releases/commit-attempt-journal.js";
 import { createFileReleaseWriteIntentStore } from "../releases/release-write-intent-store.js";
 import type { ReleaseWriteIntentStore } from "../releases/release-write-intent-store.js";
@@ -541,20 +541,12 @@ export async function createProductionDaemonApplication(options: {
 }
 
 /**
- * Installed package version, read relative to this module — never cwd, never the
- * environment. `dist/daemon/production-composition.js` and
- * `src/daemon/production-composition.ts` are both two levels below the package
- * root, so this resolves to the installed manifest in both layouts.
+ * Installed package version. The implementation lives in
+ * `shared/package-version.ts` so the daemon and the operator CLI read ONE
+ * installed manifest; it is re-exported here so this module's public surface
+ * (and `playopsd`) is unchanged.
  */
-export function readInstalledPackageVersion(): string | undefined {
-  try {
-    const manifest = fileURLToPath(new URL("../../package.json", import.meta.url));
-    const pkg = JSON.parse(readFileSync(manifest, "utf8")) as { version?: unknown };
-    return typeof pkg.version === "string" ? pkg.version : undefined;
-  } catch {
-    return undefined;
-  }
-}
+export { readInstalledPackageVersion };
 
 export interface ProductionDaemonCompositionDeps {
   readonly config: PlayOpsConfig;

@@ -4,6 +4,9 @@ node_modules/
 # Build output
 dist/
 
+# Release packaging output (local npm tarballs, never committed)
+artifacts/
+
 # Secrets — never commit service-account credentials
 *.service-account.json
 service-account*.json

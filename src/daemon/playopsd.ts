@@ -23,7 +23,7 @@
  * Startup order (all before the socket is bound; zero Google API calls):
  *
  *   runtime check -> config -> validation -> verifier -> credential -> publisher
- *   -> composition -> bind owner-only socket -> listen -> serve -> drain
+ *   -> composition -> bind capability-group socket -> listen -> serve -> drain
  *
  * Shutdown order (see `lifecycle.ts`):
  *
