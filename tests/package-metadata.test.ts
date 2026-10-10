@@ -43,6 +43,7 @@ describe("Phase 6.1 CLI-only distribution contract", () => {
       "docs/audit-log.md",
       "docs/release-pipeline.md",
       "docs/release-process.md",
+      "docs/operator-client.md",
     ]);
     for (const hook of ["prepare", "preinstall", "install", "postinstall", "publish"])
       expect(metadata.scripts[hook]).toBeUndefined();

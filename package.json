@@ -20,7 +20,8 @@
     "docs/permissions-and-approvals.md",
     "docs/audit-log.md",
     "docs/release-pipeline.md",
-    "docs/release-process.md"
+    "docs/release-process.md",
+    "docs/operator-client.md"
   ],
   "scripts": {
     "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.json",

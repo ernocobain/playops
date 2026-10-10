@@ -117,6 +117,8 @@ const workdir = join(base, "workdir");
 const stateDir = join(base, "state");
 const blocker = join(base, "offline-block.mjs");
 const trace = join(base, "network-trace.json");
+const localSocketRoot = join(base, "s");
+mkdirSync(localSocketRoot, { recursive: true });
 for (const dir of [source, artifacts, consumer, workdir, stateDir])
   mkdirSync(dir, { recursive: true });
 
@@ -148,6 +150,8 @@ writeFileSync(
     'import https from "node:https";',
     'import net from "node:net";',
     'import dns from "node:dns";',
+    'import { isAbsolute, relative, resolve } from "node:path";',
+    'import { syncBuiltinESMExports } from "node:module";',
     'import { appendFileSync } from "node:fs";',
     "const record = (what) => {",
     "  try {",
@@ -158,9 +162,34 @@ writeFileSync(
     'globalThis.fetch = () => record("fetch");',
     "http.request = () => record('http.request');",
     "https.request = () => record('https.request');",
-    'net.Socket.prototype.connect = function () { return record("net.connect"); };',
-    'dns.lookup = () => record("dns.lookup");',
-    'dns.promises.lookup = () => record("dns.promises.lookup");',
+    "const unixRoot = process.env.PHASE61_AF_UNIX_ROOT;",
+    "const unixAllowed = (args) => {",
+    "  const first = Array.isArray(args[0]) ? args[0][0] : args[0];",
+    '  const path = typeof first === "string" ? first : first && typeof first === "object" && first.path;',
+    '  if (!unixRoot || typeof path !== "string" || !isAbsolute(path)) return false;',
+    '  if (first && typeof first === "object" && (first.port !== undefined || first.host !== undefined)) return false;',
+    "  const rel = relative(resolve(unixRoot), resolve(path));",
+    '  return rel.length > 0 && rel !== ".." && !rel.startsWith("../") && !isAbsolute(rel);',
+    "};",
+    "const connect = net.Socket.prototype.connect;",
+    "net.Socket.prototype.connect = function (...args) {",
+    '  if (!unixAllowed(args)) return record("net.connect");',
+    "  return connect.apply(this, args);",
+    "};",
+    "const listen = net.Server.prototype.listen;",
+    "net.Server.prototype.listen = function (...args) {",
+    '  if (!unixAllowed(args)) return record("net.listen");',
+    "  return listen.apply(this, args);",
+    "};",
+    'http.get = () => record("http.get");',
+    'https.get = () => record("https.get");',
+    'globalThis[Symbol.for("playops.acceptance.local-only")] = true;',
+    "for (const target of [dns, dns.promises]) {",
+    "  for (const name of Object.keys(target)) {",
+    '    if (/^(lookup|resolve|reverse)/u.test(name) && typeof target[name] === "function") target[name] = () => record("dns." + name);',
+    "  }",
+    "}",
+    "syncBuiltinESMExports();",
     "",
   ].join("\n"),
 );
@@ -331,7 +360,7 @@ try {
   const documentation = assertOperatorDocumentation(installed);
   check(
     "installed README/changelog/operator-doc relative links and safe examples validate without repository files",
-    documentation.documents.length === 7 && documentation.relativeLinks > 0,
+    documentation.documents.length === 8 && documentation.relativeLinks > 0,
   );
   const installedMetadata = JSON.parse(readFileSync(join(installed, "package.json"), "utf8"));
   const installedCheck = (() => {
@@ -427,6 +456,61 @@ try {
     "installed help output leaks no credential material",
     !/(private_key|service_account|Authorization)/iu.test(help.stdout),
   );
+  check(
+    "installed help lists the daemon operator-client group and pinned endpoint",
+    /daemon\s+Operator client/u.test(help.stdout) &&
+      /daemon status/u.test(help.stdout) &&
+      /\/run\/playops\/playops\.sock/u.test(help.stdout),
+  );
+
+  // Fail the installed daemon CLI if its import graph reaches legacy authority.
+  const clientImportGuard = join(consumer, "client-import-guard.mjs");
+  writeFileSync(
+    clientImportGuard,
+    `
+import { registerHooks } from "node:module";
+registerHooks({ resolve(specifier, context, nextResolve) {
+  const result = nextResolve(specifier, context);
+  if (["/dist/config/", "/dist/googleplay/", "/dist/doctor/", "/dist/reviews/composition", "/dist/daemon/pending-store", "/dist/daemon/request-claim", "/dist/daemon/production-composition", "/dist/releases/commit-attempt-journal", "/dist/releases/session-store", "/dist/releases/release-write-intent-store"].some((part) => result.url.includes(part))) throw new Error("CLIENT_AUTHORITY_IMPORT_FORBIDDEN");
+  return result;
+}});
+`,
+  );
+  const isolatedDaemonHelp = capture(
+    process.execPath,
+    ["--import", blocker, "--import", clientImportGuard, cliPath, "daemon", "--help"],
+    { cwd: workdir, env: cliEnv },
+  );
+  check(
+    "installed playops daemon entrypoint imports no config, Google, stores or release composition",
+    isolatedDaemonHelp.status === 0 && /off-host signer/u.test(isolatedDaemonHelp.stdout),
+    isolatedDaemonHelp.stderr.slice(0, 200),
+  );
+
+  // ------------------------------------------ Stage 4B.4 operator client
+  check(
+    "installed daemon-client transport, approval, render and CLI modules ship in the tarball",
+    [
+      "dist/client/transport.js",
+      "dist/client/outcome.js",
+      "dist/client/approval.js",
+      "dist/client/render.js",
+      "dist/cli/daemon.js",
+    ].every((path) => installedFiles.includes(path)),
+  );
+  {
+    // A dist scan proves no private-key / signer API is shipped anywhere.
+    const signerApi =
+      /(createPrivateKey|generateKeyPair|generateKeyPairSync|createSign|privateKeyPath|createSecretKey)/u;
+    const offenders = installedFiles
+      .filter((path) => path.endsWith(".js"))
+      .filter((path) => signerApi.test(readFileSync(join(installed, path), "utf8")));
+    check(
+      "no installed module exposes a private-key or signer API",
+      offenders.length === 0,
+      offenders.join(", "),
+    );
+  }
 
   // ------------------------------------------ Stage 4A.1 playopsd application
   const daemonBinLink = join(consumer, "node_modules", ".bin", "playopsd");
@@ -647,6 +731,82 @@ try {
     }
   }
 
+  // Negative controls use a separate trace: attempted calls are blocked BEFORE I/O.
+  const guardProbeTrace = join(base, "blocked-probes.jsonl");
+  const probeCode = `
+import net from "node:net"; import http from "node:http"; import https from "node:https"; import dns from "node:dns";
+if (globalThis[Symbol.for("playops.acceptance.local-only")] !== true) throw new Error("OFFLINE_GUARD_MISSING");
+const probes = [
+  ["TCP", () => net.createConnection({ host: "127.0.0.1", port: 9 })],
+  ["TCP listener", () => net.createServer().listen({ host: "127.0.0.1", port: 0 })],
+  ["HTTP", () => http.get("http://127.0.0.1:9")],
+  ["HTTPS", () => https.get("https://127.0.0.1:9")],
+  ["DNS", () => dns.lookup("synthetic.invalid", () => {})],
+  ["outside Unix root", () => net.createConnection("/run/playops/playops.sock")],
+  ["Unix traversal", () => net.createConnection(process.env.PHASE61_AF_UNIX_ROOT + "/../outside.sock")],
+];
+const blocked = [];
+for (const [name, probe] of probes) {
+  try { probe(); } catch (cause) { if (cause.message === "NETWORK-FORBIDDEN-IN-PHASE61-ACCEPTANCE") blocked.push(name); }
+}
+console.log(JSON.stringify(blocked));
+if (blocked.length !== probes.length) process.exitCode = 1;
+`;
+  const guardProbe = capture(
+    process.execPath,
+    ["--import", blocker, "--input-type=module", "-e", probeCode],
+    {
+      cwd: consumer,
+      env: { ...cliEnv, PHASE61_AF_UNIX_ROOT: localSocketRoot, PHASE61_NET_TRACE: guardProbeTrace },
+    },
+  );
+  check(
+    "offline guard blocks TCP/DNS/HTTP and Unix sockets outside the test root before I/O",
+    guardProbe.status === 0 && traceLines(guardProbeTrace).length === 7,
+    guardProbe.stderr.slice(0, 400),
+  );
+
+  // ---------------------- Stage 4B.4 operator client over a LOCAL test socket
+  // Keep the external-network blocker active; permit only this isolated AF_UNIX
+  // subtree. No TCP/DNS/HTTP exception exists for the client checks.
+  writeFileSync(
+    join(consumer, "phase61-daemon-client-socket.mjs"),
+    daemonClientSocketChecksSource(),
+  );
+  const socketRun = capture(
+    process.execPath,
+    ["--import", blocker, join(consumer, "phase61-daemon-client-socket.mjs")],
+    {
+      cwd: consumer,
+      env: {
+        ...cliEnv,
+        PHASE61_PACKAGE: installed,
+        PHASE61_AF_UNIX_ROOT: localSocketRoot,
+        PHASE61_BLOCKER: blocker,
+      },
+    },
+  );
+  let socketReport = null;
+  try {
+    socketReport = JSON.parse(socketRun.stdout.slice(socketRun.stdout.indexOf("{")));
+  } catch {
+    socketReport = null;
+  }
+  check(
+    "installed daemon-client socket acceptance produced a report",
+    socketReport !== null,
+    socketRun.stderr.slice(0, 400),
+  );
+  if (socketReport) {
+    for (const [name, ok] of Object.entries(socketReport.results)) {
+      check(
+        `installed daemon client socket: ${name}`,
+        ok === true,
+        JSON.stringify(socketReport.detail?.[name] ?? ""),
+      );
+    }
+  }
+
   check(
     "installed local finalization and offline runtime observed zero network calls",
     traceLines(trace).length === 0,
@@ -862,6 +1022,7 @@ function installedChecksSource() {
     "  );",
     "});",
     ...localFinalizationChecksSource(),
+    ...daemonClientModuleChecksSource(),
     'await record("installed checks wrote nothing inside the package directory", () =>',
     "  JSON.stringify(before) === JSON.stringify(listing(pkgDir)),",
     ");",
@@ -1032,4 +1193,215 @@ await record("installed finalizer refuses a later managed session without cleari
 `
     .trim()
     .split("\n");
+}
+
+/** Stage 4B.4 pure client modules, exercised inside the offline installed consumer. */
+function daemonClientModuleChecksSource() {
+  return `
+await record("installed client pins the production socket endpoint to the daemon default", async () => {
+  const transport = await import("playops/dist/client/transport.js");
+  const config = await import("playops/dist/config/types.js");
+  return transport.PRODUCTION_OPERATOR_SOCKET_PATH === config.DEFAULT_CONFIG.daemon.socketPath &&
+    transport.PRODUCTION_OPERATOR_SOCKET_PATH === "/run/playops/playops.sock";
+});
+await record("installed client validates challenges, rejects tampering and preserves export bytes", async () => {
+  const approval = await import("playops/dist/client/approval.js");
+  const open = await import("playops/dist/releases/open-tool.js");
+  const view = await import("playops/dist/daemon/pending-view.js");
+  const statement = await import("playops/dist/approvals/statement.js");
+  const statementText = open.createReleaseEditOpenStatement("com.example.clientacc");
+  const challenge = view.approvalChallengeFor({ requestId: "11111111-2222-4333-8444-555555555555", nonce: "n".repeat(43), toolName: "releases.open_edit", permission: "destructive", packageName: "com.example.clientacc", requestDigest: statement.approvalStatementDigest(statementText), expiresAtUtc: "2026-10-10T00:10:00.000Z" }, statementText);
+  approval.validateApprovalChallenge(challenge);
+  const exported = approval.createApprovalExport(challenge, { requestId: challenge.requestId });
+  const round = JSON.parse(approval.serializeApprovalExport(exported));
+  let rejected = false;
+  try { approval.validateApprovalChallenge({ ...challenge, requestDigest: "a".repeat(64) }); } catch { rejected = true; }
+  return rejected && round.challenge.approvalStatementCanonical === statementText && round.challenge.canonicalPayload === challenge.canonicalPayload;
+});
+await record("installed client parses signature tokens strictly", async () => {
+  const approval = await import("playops/dist/client/approval.js");
+  const good = Buffer.alloc(64, 5).toString("base64url");
+  let bad = 0;
+  for (const token of [Buffer.alloc(63).toString("base64url"), Buffer.alloc(65).toString("base64url"), "abc=", ""]) {
+    try { approval.parseSignatureToken(token); } catch { bad += 1; }
+  }
+  return approval.parseSignatureToken("  " + good + "\\n") === good && bad === 4;
+});
+await record("installed client renderer shows the four required sections", async () => {
+  const render = await import("playops/dist/client/render.js");
+  const open = await import("playops/dist/releases/open-tool.js");
+  const view = await import("playops/dist/daemon/pending-view.js");
+  const statement = await import("playops/dist/approvals/statement.js");
+  const statementText = open.createReleaseEditOpenStatement("com.example.clientacc");
+  const challenge = view.approvalChallengeFor({ requestId: "11111111-2222-4333-8444-555555555555", nonce: "n".repeat(43), toolName: "releases.open_edit", permission: "destructive", packageName: "com.example.clientacc", requestDigest: statement.approvalStatementDigest(statementText), expiresAtUtc: "2026-10-10T00:10:00.000Z" }, statementText);
+  const text = render.renderApprovalStatement(challenge);
+  return ["SEMANTIC AUTHORIZATION", "CONSEQUENCES", "INTEGRITY FINGERPRINTS", "REQUEST / EXPIRY"].every((heading) => text.includes(heading));
+});
+await record("installed client outcome set covers the protocol union with conservative exit codes", async () => {
+  const outcome = await import("playops/dist/client/outcome.js");
+  return outcome.DAEMON_RESPONSE_OUTCOMES.length === 17 &&
+    outcome.exitCodeForOutcome("external_state_ambiguous") === 2 &&
+    outcome.exitCodeForOutcome("cleanup_pending") === 2 &&
+    outcome.exitCodeForOutcome("success") === 0 &&
+    outcome.exitCodeForOutcome("remote_failure") === 1;
+});
+`
+    .trim()
+    .split("\n");
+}
+
+/**
+ * Stage 4B.4 operator client over a real LOCAL AF_UNIX socket, with external
+ * networking blocked and a narrowly scoped, isolated socket-root exception.
+ */
+function daemonClientSocketChecksSource() {
+  return `
+import { createServer } from "node:net";
+import { mkdtempSync, rmSync, readFileSync, lstatSync } from "node:fs";
+import { join } from "node:path";
+import { spawn } from "node:child_process";
+
+const results = {};
+const detail = {};
+const record = async (name, fn) => {
+  try {
+    results[name] = (await fn()) === true;
+    if (results[name] !== true) detail[name] = "returned a non-true value";
+  } catch (error) {
+    results[name] = false;
+    detail[name] = String(error && error.message);
+  }
+};
+
+await record("local socket consumer has the external network blocker active", async () => globalThis[Symbol.for("playops.acceptance.local-only")] === true);
+
+const daemon = await import("playops/dist/cli/daemon.js");
+const open = await import("playops/dist/releases/open-tool.js");
+const view = await import("playops/dist/daemon/pending-view.js");
+const statement = await import("playops/dist/approvals/statement.js");
+
+const PACKAGE = "com.example.clientacc";
+const UUID = "11111111-2222-4333-8444-555555555555";
+const SIG = Buffer.alloc(64, 3).toString("base64url");
+const statementText = open.createReleaseEditOpenStatement(PACKAGE);
+const challenge = view.approvalChallengeFor({ requestId: UUID, nonce: "n".repeat(43), toolName: "releases.open_edit", permission: "destructive", packageName: PACKAGE, requestDigest: statement.approvalStatementDigest(statementText), expiresAtUtc: "2026-10-10T00:10:00.000Z" }, statementText);
+const reply = (outcome, extra) => JSON.stringify(Object.assign({ protocolVersion: 5, correlationId: "acc", outcome }, extra || {}));
+
+const tempDirs = [];
+function startStub(handler) {
+  const dir = mkdtempSync(join(process.env.PHASE61_AF_UNIX_ROOT, "c-"));
+  tempDirs.push(dir);
+  const socketPath = join(dir, "stub.sock");
+  const server = createServer({ allowHalfOpen: true }, (socket) => {
+    const chunks = [];
+    socket.on("data", (chunk) => chunks.push(chunk));
+    socket.on("error", () => undefined);
+    socket.on("end", () => {
+      const raw = Buffer.concat(chunks);
+      const length = raw.readUInt32BE(0);
+      const envelope = JSON.parse(raw.subarray(4, 4 + length).toString("utf8"));
+      const action = handler(envelope.request, socket);
+      if (action === "destroy") { socket.destroy(); return; }
+      if (action === "hold") return;
+      socket.write(Buffer.from(action, "utf8"));
+      socket.end();
+    });
+  });
+  return new Promise((resolve) => server.listen(socketPath, () => resolve({ socketPath, close: () => new Promise((res) => server.close(() => res())) })));
+}
+function makeIo() {
+  const out = [];
+  const err = [];
+  return { io: { write: (text) => out.push(text), writeError: (text) => err.push(text) }, out, err, text: () => out.join("\\n") };
+}
+
+await record("status against a stub daemon on a test socket", async () => {
+  const stub = await startStub(() => reply("status", { summary: "pending=0 completed=0" }));
+  const c = makeIo();
+  const code = await daemon.runDaemonCli(["status"], c.io, { socketPath: stub.socketPath });
+  await stub.close();
+  return code === 0 && c.text().includes("DAEMON STATUS") && c.text().includes("cannot resolve a specific requestId");
+});
+
+await record("prepare exports the challenge at 0600 and reconstructs the digest", async () => {
+  const stub = await startStub(() => reply("approval_required", { approval: challenge }));
+  const dir = mkdtempSync(join(process.env.PHASE61_AF_UNIX_ROOT, "o-"));
+  tempDirs.push(dir);
+  const outPath = join(dir, "challenge.json");
+  const c = makeIo();
+  const code = await daemon.runDaemonCli(["open", "prepare", "--out", outPath], c.io, { socketPath: stub.socketPath });
+  await stub.close();
+  const exported = JSON.parse(readFileSync(outPath, "utf8"));
+  return code === 0 && (lstatSync(outPath).mode & 0o777) === 0o600 && exported.challenge.approvalStatementCanonical === statementText && exported.challenge.requestDigest === statement.approvalStatementDigest(statementText);
+});
+
+await record("tampered challenge is rejected before display", async () => {
+  const tampered = Object.assign({}, challenge, { approvalStatementCanonical: statementText.replace("none", "tracked") });
+  const stub = await startStub(() => reply("approval_required", { approval: tampered }));
+  const c = makeIo();
+  const code = await daemon.runDaemonCli(["open", "prepare"], c.io, { socketPath: stub.socketPath });
+  await stub.close();
+  return code === 2 && c.err.length > 0 && !c.text().includes("SEMANTIC AUTHORIZATION");
+});
+
+function runInstalledCli(socketPath, args, signatureText, onChild) {
+  const program = 'const { runDaemonCli } = await import("playops/dist/cli/daemon.js"); process.exitCode = await runDaemonCli(process.argv.slice(2), { write: t => process.stdout.write(t), writeError: t => process.stderr.write(t) }, { socketPath: process.argv[1] });';
+  const child = spawn(process.execPath, ["--import", process.env.PHASE61_BLOCKER, "--input-type=module", "-e", program, socketPath, ...args], { cwd: process.cwd(), env: process.env, stdio: ["pipe", "pipe", "pipe"] });
+  if (onChild) onChild(child);
+  let stdout = "", stderr = "", timedOut = false;
+  child.stdout.setEncoding("utf8"); child.stderr.setEncoding("utf8");
+  child.stdout.on("data", t => { stdout += t; });
+  child.stderr.on("data", t => { stderr += t; });
+  child.stdin.on("error", () => {});
+  child.stdin.end(signatureText);
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, 10000);
+    child.on("close", (code, signal) => { clearTimeout(timer); resolve({ code, signal, timedOut, stdout, stderr }); });
+  });
+}
+
+await record("actual stdin EOF transports one signature token to the installed client", async () => {
+  let dispatches = 0, received = false;
+  const stub = await startStub((request) => { dispatches++; received = request.signature === SIG; return reply("success", { summary: "done" }); });
+  const result = await runInstalledCli(stub.socketPath, ["open", "execute", "--request-id", UUID, "--signature-stdin"], SIG + "\\n");
+  await stub.close();
+  return result.code === 0 && !result.timedOut && received && dispatches === 1 && result.stdout.includes("OUTCOME: success") && !result.stdout.includes(SIG) && !result.stderr.includes(SIG);
+});
+
+await record("actual SIGINT after dispatch reports unknown outcome and never resends", async () => {
+  let child, held, dispatches = 0;
+  const stub = await startStub((_request, socket) => { dispatches++; held = socket; child.kill("SIGINT"); return "hold"; });
+  const result = await runInstalledCli(stub.socketPath, ["commit", "execute", "--request-id", UUID, "--signature-stdin"], SIG, c => { child = c; });
+  if (held) held.destroy();
+  await stub.close();
+  return result.code === 2 && !result.timedOut && dispatches === 1 && result.stderr.includes("OUTCOME UNKNOWN FROM CLIENT PERSPECTIVE");
+});
+
+await record("prepare response loss reports unknown local pending state without replay", async () => {
+  let dispatches = 0;
+  const stub = await startStub(() => { dispatches++; return "destroy"; });
+  const c = makeIo();
+  const code = await daemon.runDaemonCli(["open", "prepare"], c.io, { socketPath: stub.socketPath });
+  await stub.close();
+  return code === 2 && dispatches === 1 && c.err.join(" ").includes("another prepare may create another pending request");
+});
+
+await record("connect failure exits 1 with zero mutation", async () => {
+  const c = makeIo();
+  const code = await daemon.runDaemonCli(["status"], c.io, { socketPath: join(process.env.PHASE61_AF_UNIX_ROOT, "absent-" + Date.now() + ".sock") });
+  return code === 1 && c.err.length > 0;
+});
+
+await record("post-dispatch disconnect exits 2 without replay", async () => {
+  const stub = await startStub(() => "destroy");
+  const c = makeIo();
+  const code = await daemon.runDaemonCli(["commit", "execute", "--request-id", UUID, "--signature-stdin"], c.io, { socketPath: stub.socketPath, readSignature: async () => SIG });
+  await stub.close();
+  return code === 2;
+});
+
+for (const dir of tempDirs) { try { rmSync(dir, { recursive: true, force: true }); } catch {} }
+console.log("\\n" + JSON.stringify({ results, detail }));
+if (Object.values(results).some((value) => value !== true)) process.exitCode = 1;
+`;
 }

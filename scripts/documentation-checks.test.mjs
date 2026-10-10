@@ -16,7 +16,7 @@ import { REQUIRED_PAYLOAD_FILES } from "./package-content.mjs";
 const root = fileURLToPath(new URL("../", import.meta.url));
 test("validates every public release document and their installed-payload links", () => {
   const result = assertOperatorDocumentation(root);
-  assert.equal(result.documents.length, 7);
+  assert.equal(result.documents.length, 8);
   assert.ok(result.relativeLinks > 0);
   assert.ok(result.cliExamples.includes("playops --help"));
   assert.ok(result.documents.includes("CHANGELOG.md"));

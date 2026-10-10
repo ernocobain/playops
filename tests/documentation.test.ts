@@ -50,6 +50,7 @@ describe("Phase 6.4 operator documentation", () => {
       "docs/audit-log.md",
       "docs/release-pipeline.md",
       "docs/release-process.md",
+      "docs/operator-client.md",
     ]);
     expect(inspection.report.relativeLinks).toBeGreaterThan(0);
     expect(commands).toContain("playops --help");

@@ -25,6 +25,7 @@ export const OPERATOR_DOC_FILES = Object.freeze([
   "docs/audit-log.md",
   "docs/release-pipeline.md",
   "docs/release-process.md",
+  "docs/operator-client.md",
 ]);
 
 /** Root-level release-consumer files. `CHANGELOG.md` ships deliberately. */

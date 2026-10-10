@@ -14,6 +14,7 @@ the repository maintainers.
 ### Added
 
 - Human-verifiable approval statements (`ApprovalStatement` V1) for the four signed daemon operations. Each approval challenge carries `approvalStatementVersion: 1` and `approvalStatementCanonical`: the exact deterministic JSON text whose SHA-256 is the signed `requestDigest`. Commit statements list every target-track release and its exact localized release-note text. The daemon wire protocol is version 5, and pending approvals created under the previous opaque-digest scheme are refused instead of executed.
+- Operator client for the release daemon (`playops daemon status|open|notes|commit|verify|reconcile`). It pins the production endpoint to `/run/playops/playops.sock`, validates challenges before display/export, reads execute signatures from stdin only, and never automatically retries a mutating request. See [docs/operator-client.md](docs/operator-client.md). Not production-ready: deployment and the `0600` transport limitation remain blocked.
 
 ## [0.3.0] - 2026-10-09
 
