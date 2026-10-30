@@ -118,6 +118,9 @@ function fixture(credentialPrivateKey?: string): {
     }),
     { mode: 0o640 },
   );
+  // Preserve the exact secret-service mode even under a restrictive umask.
+  chmodSync(join(root, "service-account.json"), 0o640);
+  expect(lstatSync(join(root, "service-account.json")).mode & 0o777).toBe(0o640);
   const configPath = join(root, "playops.yaml");
   writeFileSync(
     configPath,

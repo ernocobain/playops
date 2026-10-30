@@ -104,8 +104,9 @@ artifact and the tag both belong to the commit that contains it.
 5. Run all five gates: `NODE_ENV=development npm run build`,
    `npm run test:run`, `npm run lint`, `npm run typecheck`, and
    `npm run format:check`.
-6. Run the producer clean-build, package, and documentation checks:
+6. Run the producer clean-build, mode-normalization, package, and documentation checks:
    `node --test scripts/clean-dist.test.mjs`,
+   `node --test scripts/normalize-package-modes.test.mjs`,
    `node --test scripts/package-content.test.mjs`,
    `node --test scripts/documentation-checks.test.mjs`, and
    `node --test scripts/release-version.test.mjs`.
@@ -142,25 +143,76 @@ tags on its own.
 
 ### Clean-build and package-content contract
 
-`npm run build` removes only this repository's generated `dist` directory through
-`scripts/clean-dist.mjs`, then regenerates it from the current `src` tree using
-the installed TypeScript compiler. The cleaner resolves the repository from its
-own script location, not the caller's working directory. It validates the PlayOps
-package and the exact `dist` compiler output, refuses filesystem-root boundaries,
-links or ordinary files at the output path, and accepts no configurable deletion
-target. A missing `dist` is a no-op.
+`npm run build` (`node scripts/clean-dist.mjs && tsc -p tsconfig.json`) removes
+only this repository's generated `dist` directory through `scripts/clean-dist.mjs`,
+then regenerates it from the current `src` tree using the installed TypeScript
+compiler. The cleaner resolves the repository from its own script location, not
+the caller's working directory. It validates the PlayOps package and the exact
+`dist` compiler output, refuses filesystem-root boundaries, links or ordinary
+files at the output path, and accepts no configurable deletion target. A missing
+`dist` is a no-op.
 
-The existing `prepack` hook runs that same build before ordinary `npm pack`, so
-deleted or renamed modules cannot survive as stale compiled package entries.
-Do not disable lifecycle scripts for release packaging. A pack with
+The `prepack` hook (`npm run build && node scripts/normalize-package-modes.mjs`)
+runs that clean build and then normalizes package payload file modes before
+ordinary `npm pack`, so deleted or renamed modules cannot survive as stale
+compiled package entries and restrictive caller `umask` values (such as `0077`)
+do not leak into packed file permissions. `scripts/normalize-package-modes.mjs`
+validates the repository root, ancestor directories, regular-file descriptor
+identity (`nlink === 1`, no symlinks), package metadata, and the allowlisted
+payload (while permitting verified paired `.d.ts` and `.js.map` compiler
+byproducts in `dist/` that do not ship), then sets declared `package.bin`
+entrypoints (`dist/cli/index.js`, `dist/daemon/main.js`) to exact mode `0755`
+and all other shipped payload files (compiled `dist/**/*.js`, root payload
+files, operator guides, and `deploy/**` templates) to exact mode `0644`. The
+manifest keeps the no-`prepare`/no-`preinstall`/no-`install`/no-`postinstall`
+contract. Do not disable lifecycle scripts for release packaging. A pack with
 `--ignore-scripts` is only a diagnostic of already-built output, not the release
 build procedure.
 
-Compare normalized relative package entry lists and per-entry content hashes
-across repeat clean builds and the isolated `test:package` artifact. Counts alone
-do not prove equal payloads. Runtime payload contents must agree; raw `.tgz`
-byte hashes need not agree if archive metadata differs. Record each observed
-archive hash separately rather than substituting a hash from another build.
+Compare normalized relative package entry lists, normalized file modes (`0755`
+for declared `bin` entrypoints and `0644` for all other shipped files), and
+per-entry content hashes across repeat clean builds and the isolated
+`test:package` artifact. Counts alone do not prove equal payloads. When a
+release gate requires byte-for-byte `.tgz` reproducibility across independent
+clean builds, the raw `.tgz` SHA-256 hashes must also match byte-for-byte;
+archive-metadata or file-mode differences do **not** waive an explicitly
+required byte-reproducibility check. Record each observed archive hash
+separately rather than substituting a hash from another build.
+
+For the `0.4.1` unreleased development candidate currently in preparation:
+
+- E1 synthetic credential fixture mode normalization (`0640` under restrictive
+  umask), E2-A normalizer implementation and 39 unit tests (plus one frozen
+  smoke probe with 10 cases, runtime-JS regression, and 3 diagnostics), E2-B
+  `prepack` wiring with synthetic dry-run lifecycle witnesses
+  (`clean -> compile -> normalize`, failure propagation, and no install hooks;
+  `E2_B_TECHNICALLY_VERIFIED` and accepted as
+  `E2_B_ACCEPTED_WITH_DOCUMENTED_EXCEPTION`), and the P3 exact two-file delta
+  in `scripts/package-content.mjs` and `scripts/package-content.test.mjs`
+  where the shared package-content validator enforces the exact
+  deployment-template allowlist (rejecting extra files under `deploy/` in shared
+  `findPathViolations` for F1 and adding `DEPLOYMENT_TEMPLATE_FILES` to
+  `REQUIRED_PAYLOAD_FILES`/`REQUIRED_FILES` so both
+  `deploy/systemd/playops.service` and `deploy/tmpfiles.d/playops.conf` are
+  required for F2) are complete.
+- On the 327-file P3 candidate snapshot, all six release gates (`lint`,
+  `test:run` with `3271` executed tests in `145` files, `typecheck`,
+  `format:check`, `build`, and `test:package` with `123` checks, zero failures,
+  and `networkCallsObserved` empty), all five native script suites (`13`, `39`,
+  `87`, `15`, and `22` tests respectively), two byte-reproducible ordinary
+  lifecycle `npm pack` runs (`148` entries), separate production-only consumer
+  install and `playops --help` smoke, the scoped F1/F2-only Kiro review, and
+  the `2026-10-30` final post-audit source/protected-state/security postcheck
+  completed under `P3_WORKFLOW_CLOSED_WITH_DOCUMENTED_EXCEPTIONS`, preserving
+  the explicitly accepted historical AGY lookup, runner, consumer, and
+  final-continuation exceptions (not a clean exception-free run or blanket
+  whole-repository Kiro audit).
+- Reconciling the release documentation in `README.md`, `CHANGELOG.md`, and
+  `docs/release-process.md` creates a new working-tree snapshot that is not yet
+  verified as a current tree or rebuilt `playops-0.4.1.tgz` artifact and
+  requires its own applicable release-process verification, rebuilt artifact
+  identity, and relevant review; `0.4.1` remains uncommitted, untagged, and
+  unpublished, and frozen `v0.4.0` is unchanged.
 
 ## 5. Tag contract and tag safety
 
@@ -255,13 +307,20 @@ pushes the real repository.
   internally consistent.
 - Version consistency is enforced against the repository working tree. A release
   produced from a differently patched checkout is out of contract.
-- `tests/fixtures/service-account.valid.json` is a tracked synthetic fixture.
-  The explicit `.gitignore` exception retains it in source checkouts while real
-  credential files remain excluded. It is deliberately not shipped in the npm
-  tarball, and the consumer does not depend on it. Do not replace it with real
-  service-account material.
+- `tests/fixtures/service-account.valid.json` is a tracked synthetic fixture
+  for fresh-clone tests. The explicit `.gitignore` exception retains it in
+  source checkouts while real credential files remain excluded. Separately, the
+  E1 setup in `tests/daemon-production-composition.test.ts` generates a
+  temporary synthetic `service-account.json` inside a `mkdtempSync` root and
+  explicitly normalizes and asserts the required `0640` mode on that temporary
+  file under a restrictive umask (`0077`) without changing production credential
+  authorization or secret-file security policy. The tracked fixture is
+  deliberately not shipped in the npm tarball, and the consumer does not depend
+  on it. Do not replace it with real service-account material.
 - The dependency audit (`npm audit --omit=dev`, `npm audit`) reports the state of
   the recorded versions at release time; it is not a guarantee about future
   advisories.
-- Live Google mutation authorization is not established by any release step and
-  requires separate, explicitly authorized operational evidence for each release.
+- Production deployment, host provisioning, daemon service installation, and
+  R6A remain blocked. Live Google mutation authorization is not established by
+  any release step and requires separate, explicitly authorized operational
+  evidence for each release.

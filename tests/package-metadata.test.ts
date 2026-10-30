@@ -31,8 +31,11 @@ describe("Phase 6.1 CLI-only distribution contract", () => {
       playopsd: "dist/daemon/main.js",
     });
   });
-  it("builds only before packing and ships runtime JS, the safe example and only operator guides", () => {
-    expect(metadata.scripts.prepack).toBe("npm run build");
+  it("builds and normalizes modes only before packing and ships runtime JS, the safe example and only operator guides", () => {
+    expect(metadata.scripts.build).toBe("node scripts/clean-dist.mjs && tsc -p tsconfig.json");
+    expect(metadata.scripts.prepack).toBe(
+      "npm run build && node scripts/normalize-package-modes.mjs",
+    );
     expect(metadata.scripts["test:package"]).toBe("node scripts/package-acceptance.mjs");
     expect(metadata.files).toEqual([
       "dist/**/*.js",
@@ -48,7 +51,17 @@ describe("Phase 6.1 CLI-only distribution contract", () => {
       "docs/deployment-production.md",
       "deploy/**",
     ]);
-    for (const hook of ["prepare", "preinstall", "install", "postinstall", "publish"])
+    for (const hook of [
+      "prepare",
+      "prepublish",
+      "prepublishOnly",
+      "preinstall",
+      "install",
+      "postinstall",
+      "publish",
+      "postpublish",
+      "version",
+    ])
       expect(metadata.scripts[hook]).toBeUndefined();
   });
   it("keeps the approved runtime, private local distribution, version and four dependencies", () => {

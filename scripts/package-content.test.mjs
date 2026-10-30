@@ -3,13 +3,19 @@ import test from "node:test";
 import {
   assertPackageContents,
   assertPackageMetadata,
+  DEPLOYMENT_TEMPLATE_FILES,
   DEPLOYMENT_TEMPLATE_GLOBS,
+  findPathViolations,
+  FORBIDDEN_SCRIPTS,
   OPERATOR_DOC_FILES,
   REQUIRED_FILES,
+  REQUIRED_PAYLOAD_FILES,
   ROOT_PAYLOAD_FILES,
   RUNTIME_DEPENDENCIES,
   REQUIRED_MODULE_FILES,
 } from "./package-content.mjs";
+
+const EXPECTED_PREPACK = "npm run build && node scripts/normalize-package-modes.mjs";
 
 const metadata = () => ({
   name: "playops",
@@ -28,7 +34,7 @@ const metadata = () => ({
     ...DEPLOYMENT_TEMPLATE_GLOBS,
   ],
   dependencies: { ...RUNTIME_DEPENDENCIES },
-  scripts: { prepack: "npm run build" },
+  scripts: { prepack: EXPECTED_PREPACK },
 });
 test("accepts CLI-only metadata and the minimum safe runtime payload", () => {
   assert.doesNotThrow(() => assertPackageMetadata(metadata()));
@@ -97,11 +103,47 @@ for (const update of [
   { bin: { playops: "src/cli/index.ts" } },
   { files: ["*"] },
   { dependencies: {} },
-  { scripts: { prepack: "tsc", install: "npm run build" } },
-  { scripts: { prepack: "npm run build", prepare: "npm run build" } },
+  { scripts: { prepack: EXPECTED_PREPACK, install: "npm run build" } },
+  { scripts: { prepack: EXPECTED_PREPACK, prepare: "npm run build" } },
 ]) {
   test(`rejects drifted or install-compiling metadata ${JSON.stringify(update)}`, () =>
     assert.throws(() => assertPackageMetadata({ ...metadata(), ...update })));
+}
+for (const invalidScripts of [
+  undefined,
+  {},
+  { prepack: "" },
+  { prepack: "tsc" },
+  { prepack: "npm run build" },
+  { prepack: "node scripts/normalize-package-modes.mjs" },
+  { prepack: "node scripts/normalize-package-modes.mjs && npm run build" },
+  { prepack: "npm run build; node scripts/normalize-package-modes.mjs" },
+  { prepack: "npm run build || node scripts/normalize-package-modes.mjs" },
+  { prepack: "npm run build & node scripts/normalize-package-modes.mjs" },
+  { prepack: "npm run build && node scripts/normalize-package-modes.mjs --force" },
+  { prepack: ` ${EXPECTED_PREPACK} ` },
+]) {
+  test(`rejects non-exact prepack lifecycle ${JSON.stringify(invalidScripts)}`, () => {
+    assert.throws(
+      () => assertPackageMetadata({ ...metadata(), scripts: invalidScripts }),
+      /scripts\.prepack must build the artifact and normalize package modes before packing/u,
+    );
+  });
+}
+for (const hook of FORBIDDEN_SCRIPTS) {
+  test(`rejects forbidden lifecycle hook scripts.${hook} even when prepack is valid`, () => {
+    assert.throws(
+      () =>
+        assertPackageMetadata({
+          ...metadata(),
+          scripts: { prepack: EXPECTED_PREPACK, [hook]: "npm run build" },
+        }),
+      new RegExp(
+        `^Error: scripts\\.${hook} must stay absent: installs must not compile or fetch$`,
+        "u",
+      ),
+    );
+  });
 }
 for (const path of [
   "dist/approvals/canonical-json.js",
@@ -129,3 +171,54 @@ test("every root release-consumer file is a required payload file", () => {
   }
   assert.ok(ROOT_PAYLOAD_FILES.includes("CHANGELOG.md"));
 });
+
+const completePayload = () => [
+  ...new Set([
+    ...ROOT_PAYLOAD_FILES,
+    ...OPERATOR_DOC_FILES,
+    ...DEPLOYMENT_TEMPLATE_FILES,
+    ...REQUIRED_MODULE_FILES,
+  ]),
+];
+
+test("requires both deployment templates and accepts a complete payload", () => {
+  assert.deepEqual(DEPLOYMENT_TEMPLATE_FILES, [
+    "deploy/systemd/playops.service",
+    "deploy/tmpfiles.d/playops.conf",
+  ]);
+  for (const path of DEPLOYMENT_TEMPLATE_FILES) {
+    assert.ok(REQUIRED_PAYLOAD_FILES.includes(path), `${path} must be required`);
+    assert.ok(REQUIRED_FILES.includes(path), `${path} must be required`);
+    assert.deepEqual(findPathViolations(path), []);
+  }
+  assert.doesNotThrow(() => assertPackageContents(completePayload(), metadata()));
+});
+
+for (const path of DEPLOYMENT_TEMPLATE_FILES) {
+  test(`rejects payload omitting deployment template ${path}`, () => {
+    const withoutTemplate = completePayload().filter((entry) => entry !== path);
+    const escaped = JSON.stringify(path).replaceAll(".", "\\.");
+    assert.throws(
+      () => assertPackageContents(withoutTemplate, metadata()),
+      new RegExp(`${escaped} is missing`, "u"),
+    );
+  });
+}
+
+for (const path of [
+  "deploy/extra.conf",
+  "deploy/README.md",
+  "deploy/systemd/extra.service",
+  "deploy/tmpfiles.d/extra.conf",
+  "deploy/systemd/playops.service/extra.conf",
+  "deploy/tmpfiles.d/playops.conf/extra.conf",
+]) {
+  test(`rejects unapproved deployment path ${JSON.stringify(path)}`, () => {
+    assert.deepEqual(findPathViolations(path), ["is not an approved deployment template"]);
+    const escaped = JSON.stringify(path).replaceAll(".", "\\.");
+    assert.throws(
+      () => assertPackageContents([...completePayload(), path], metadata()),
+      new RegExp(`${escaped} is not an approved deployment template`, "u"),
+    );
+  });
+}

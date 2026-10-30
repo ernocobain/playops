@@ -7,6 +7,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -15,10 +16,20 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import {
+  APPROVED_PACKAGE_FIELDS,
+  DEPLOYMENT_TEMPLATE_FILES,
+  OPERATOR_DOC_FILES,
+  REQUIRED_MODULE_FILES,
+  ROOT_PAYLOAD_FILES,
+  RUNTIME_DEPENDENCIES,
+} from "./package-content.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const metadata = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 const cleaner = join(root, "scripts", "clean-dist.mjs");
+const normalizer = join(root, "scripts", "normalize-package-modes.mjs");
+const packageContent = join(root, "scripts", "package-content.mjs");
 const npmCli = resolve(
   dirname(process.execPath),
   "..",
@@ -30,7 +41,9 @@ const npmCli = resolve(
 );
 
 function fixture() {
-  const base = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "playops-clean-dist-"));
+  const base = realpathSync(
+    mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "playops-clean-dist-")),
+  );
   const repo = join(base, "repository with spaces");
   const unrelated = join(base, "unrelated");
   mkdirSync(join(repo, "scripts"), { recursive: true });
@@ -40,14 +53,22 @@ function fixture() {
   writeFileSync(
     join(repo, "package.json"),
     JSON.stringify({
-      name: "playops",
-      version: "0.2.0",
-      private: true,
-      type: "module",
+      ...APPROVED_PACKAGE_FIELDS,
+      version: "0.4.0",
+      dependencies: { ...RUNTIME_DEPENDENCIES },
       scripts: { build: metadata.scripts.build, prepack: metadata.scripts.prepack },
-      files: ["dist/**/*.js"],
     }),
   );
+  for (const relPath of [
+    ...ROOT_PAYLOAD_FILES,
+    ...OPERATOR_DOC_FILES,
+    ...DEPLOYMENT_TEMPLATE_FILES,
+  ]) {
+    if (relPath === "package.json") continue;
+    const targetPath = join(repo, relPath);
+    mkdirSync(dirname(targetPath), { recursive: true });
+    writeFileSync(targetPath, `# synthetic ${relPath}\n`);
+  }
   writeFileSync(
     join(repo, "tsconfig.json"),
     JSON.stringify({
@@ -64,11 +85,20 @@ function fixture() {
       include: ["src/**/*.ts"],
     }),
   );
+  for (const modulePath of REQUIRED_MODULE_FILES) {
+    const sourcePath = join(repo, modulePath.replace(/^dist\//u, "src/").replace(/\.js$/u, ".ts"));
+    mkdirSync(dirname(sourcePath), { recursive: true });
+    writeFileSync(sourcePath, "export {};\n");
+  }
   writeFileSync(
     join(repo, "src", "daemon", "package-operation-singleflight.ts"),
     "export const currentCoordinator = true;\n",
   );
   if (existsSync(cleaner)) cpSync(cleaner, join(repo, "scripts", "clean-dist.mjs"));
+  if (existsSync(normalizer))
+    cpSync(normalizer, join(repo, "scripts", "normalize-package-modes.mjs"));
+  if (existsSync(packageContent))
+    cpSync(packageContent, join(repo, "scripts", "package-content.mjs"));
   return { base, repo, unrelated };
 }
 

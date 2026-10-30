@@ -95,7 +95,11 @@ export const FORBIDDEN_SCRIPTS = Object.freeze([
 ]);
 
 /** Files the payload must always contain. */
-export const REQUIRED_PAYLOAD_FILES = Object.freeze([...ROOT_PAYLOAD_FILES, ...OPERATOR_DOC_FILES]);
+export const REQUIRED_PAYLOAD_FILES = Object.freeze([
+  ...ROOT_PAYLOAD_FILES,
+  ...OPERATOR_DOC_FILES,
+  ...DEPLOYMENT_TEMPLATE_FILES,
+]);
 
 /** Compiled entry points an installation needs; also the minimum module allowlist. */
 export const REQUIRED_MODULE_FILES = Object.freeze([
@@ -170,6 +174,9 @@ export function findPathViolations(path) {
       violations.push(`lives under the excluded ${root}/ tree`);
     }
   }
+  if (root === "deploy" && !DEPLOYMENT_TEMPLATE_FILES.includes(path)) {
+    violations.push("is not an approved deployment template");
+  }
   const basename = segments[segments.length - 1] ?? "";
   if (basename === "PLAYOPS_PLAN.md") violations.push("is the internal roadmap");
   if (basename === ".env" || basename.startsWith(".env."))
@@ -218,8 +225,10 @@ export function assertPackageMetadata(metadata) {
     );
   }
   const scripts = metadata.scripts ?? {};
-  if (scripts.prepack !== "npm run build") {
-    throw new Error("scripts.prepack must build the artifact before packing");
+  if (scripts.prepack !== "npm run build && node scripts/normalize-package-modes.mjs") {
+    throw new Error(
+      "scripts.prepack must build the artifact and normalize package modes before packing",
+    );
   }
   for (const hook of FORBIDDEN_SCRIPTS) {
     if (scripts[hook] !== undefined) {

@@ -412,25 +412,41 @@ describe("config isolation", () => {
   });
 
   it("ignores hostile PLAYOPS_* env and uses the pinned production endpoint", async () => {
-    const stub = await startStub(() => reply("status", { summary: "should-not-be-used" }));
+    const transportModule = await import("../src/client/transport.js");
+    const fakeResult: Awaited<ReturnType<typeof transportModule.sendDaemonRequest>> = {
+      ok: true,
+      response: {
+        protocolVersion: PLAYOPS_DAEMON_PROTOCOL_VERSION,
+        correlationId: "corr",
+        outcome: "status",
+        summary: "pending=0",
+      },
+    };
+    const sendSpy = vi.spyOn(transportModule, "sendDaemonRequest").mockResolvedValue(fakeResult);
+    const hostileSocketPath = "/tmp/playops-hostile-override.sock";
+    const hostileConfigPath = "/tmp/playops-hostile-config.yaml";
     const saved = process.env.PLAYOPS_DAEMON_SOCKET_PATH;
     const savedConfig = process.env.PLAYOPS_CONFIG;
-    process.env.PLAYOPS_DAEMON_SOCKET_PATH = stub.socketPath;
-    process.env.PLAYOPS_CONFIG = stub.socketPath;
+    process.env.PLAYOPS_DAEMON_SOCKET_PATH = hostileSocketPath;
+    process.env.PLAYOPS_CONFIG = hostileConfigPath;
     try {
-      // PRODUCTION_OPERATOR_SOCKET_PATH is unchanged by the hostile env.
       expect(PRODUCTION_OPERATOR_SOCKET_PATH).toBe("/run/playops/playops.sock");
-      // With no injected socketPath the client uses the pinned constant, NOT the
-      // env-provided stub path (which would otherwise succeed with exit 0).
       const { io } = captureIo();
       const exit = await runDaemonCli(["status"], io);
-      expect(exit).toBe(1);
+      expect(exit).toBe(0);
+      expect(sendSpy).toHaveBeenCalledTimes(1);
+      const callOptions = sendSpy.mock.calls[0]?.[0];
+      expect(callOptions?.request).toEqual({ kind: "status" });
+      expect(callOptions?.socketPath).toBe(PRODUCTION_OPERATOR_SOCKET_PATH);
+      expect(callOptions?.socketPath).toBe("/run/playops/playops.sock");
+      expect(callOptions?.socketPath).not.toBe(hostileSocketPath);
+      expect(callOptions?.socketPath).not.toBe(hostileConfigPath);
     } finally {
+      sendSpy.mockRestore();
       if (saved === undefined) delete process.env.PLAYOPS_DAEMON_SOCKET_PATH;
       else process.env.PLAYOPS_DAEMON_SOCKET_PATH = saved;
       if (savedConfig === undefined) delete process.env.PLAYOPS_CONFIG;
       else process.env.PLAYOPS_CONFIG = savedConfig;
-      await stub.close();
     }
   });
 });

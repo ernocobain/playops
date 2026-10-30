@@ -2,20 +2,20 @@
 
 PlayOps is an independent, **CLI-first** agent/harness for Google Play operations: review triage and human-approved public replies, a Release Agent runtime for existing `.aab` artifacts, and app-health reporting. It does **not** build Android apps and does **not** require Hermes at runtime.
 
-**Supported runtime: Node.js 24 LTS (`>=24 <25`).** Current distribution is a local npm tarball, `playops-0.4.0.tgz`, installed as an npm CLI. It is **not published to the public npm registry**, a standalone binary, or a container. The supported entry point is `playops`, not a public JavaScript library API. PlayOps uses Semantic Versioning and stays **pre-1.0**: the prepared release candidate is `0.4.0`, whose Git tag would be `v0.4.0` only after a separate tag decision. See the [release process](docs/release-process.md) and the [changelog](CHANGELOG.md).
+**Supported runtime: Node.js 24 LTS (`>=24 <25`).** Local distribution uses an npm tarball (candidate/intended artifact `playops-0.4.1.tgz`), installed as an npm CLI. It is **not published to the public npm registry**, a standalone binary, or a container. The supported entry point is `playops`, not a public JavaScript library API. PlayOps uses Semantic Versioning and stays **pre-1.0**: on the prior P3 candidate snapshot for unreleased `0.4.1`, the six release gates, five native script suites, two byte-reproducible ordinary lifecycle packs (`148` entries), separate production-only consumer install/`playops --help` check, scoped F1/F2-only Kiro review, and 2026-10-30 post-audit source/protected-state/security postcheck completed under `P3_WORKFLOW_CLOSED_WITH_DOCUMENTED_EXCEPTIONS` (preserving the explicitly accepted historical AGY lookup, runner, consumer, and final-continuation exceptions); this documentation reconciliation creates a new snapshot requiring its own applicable verification and relevant review while `0.4.1` remains uncommitted, untagged, and unpublished and the frozen `v0.4.0` baseline is unchanged. See the [release process](docs/release-process.md) and the [changelog](CHANGELOG.md).
 
 **Core release is not production deployment.** The v0.4 daemon protocol (version 5), the production daemon bootstrap (`playopsd`), the operator socket client and the durable-state/orchestration modules ship as source/runtime components, together with the repository-owned service/tmpfiles templates and a least-secret production configuration example. There is still no deployed credential privilege boundary, no root-owned installed service and no started daemon. Production deployment, provisioning and R6A remain blocked.
 
 ## Quickstart: install a local tarball
 
-Prerequisite: Node **24** and npm. Obtain the actual tarball from your trusted package producer. The path below is a **placeholder**, not a download URL or registry package:
+Prerequisite: Node **24** and npm. Obtain the actual tarball from your trusted package producer. The path below is an **illustrative placeholder** for the candidate/intended artifact, not a download URL, registry package, distributed download, or claim that a rebuilt `playops-0.4.1.tgz` for the current documentation-reconciled snapshot is already verified or distributed:
 
 ```sh
 node --version
 mkdir -p playops-operator
 cd playops-operator
 npm init -y
-npm install --omit=dev /path/to/playops-0.4.0.tgz
+npm install --omit=dev /path/to/playops-0.4.1.tgz
 export PATH="$PWD/node_modules/.bin:$PATH"
 playops --help
 ```
@@ -106,12 +106,12 @@ The implemented syntax is `playops releases --dry-run <mutating-release-tool>`, 
 - Append-only **audit JSONL is operation evidence**; structured logging is separate, best-effort diagnostics on **stderr**. Minimum level is `info` by default; YAML `logging.level` / `PLAYOPS_LOGGING_LEVEL` accepts `debug`, `info`, `warn`, `error`.
 - Safe unexpected-error output uses stable category/code, deterministic message and optional guidance, never raw stack/cause; existing command-specific safe messages remain. `externalStateUncertain=true` means **inspect before acting; no automatic retry**. Debug does not permit secret output.
 - Redaction protects known key families; **arbitrary free-form strings are not universally scanned**. Never pass credentials, headers, SDK bodies or environment/config dumps to log messages.
-- Runtime/tool safety and local-tarball installation have fake/mock/network-isolated acceptance on Node 24. Prior specific live reads and the narrow cleanup observation are separately scoped; **Google mutation authorization remains unverified**. The Phase 6 packaging, structured-logging, error-taxonomy, operator-documentation, security-review and versioning/release-process milestones are complete for the prepared `0.4.0` local tarball; that is **not** a public-registry release, a production certification, or 1.0 API stability.
+- Runtime/tool safety and local-tarball installation have fake/mock/network-isolated acceptance on Node 24. Prior specific live reads and the narrow cleanup observation are separately scoped; **Google mutation authorization remains unverified**. The Phase 6 packaging, structured-logging, error-taxonomy, operator-documentation, security-review and versioning/release-process milestones were completed historically for the frozen `0.4.0` local tarball; for the `0.4.1` unreleased development candidate (with E1 synthetic credential fixture `0640` mode normalization, E2-A/E2-B deterministic package payload mode normalization in `prepack`, and P3 deployment-template exact allowlist hardening), the 327-file P3 candidate snapshot completed the six release gates, five native script suites (`13`/`39`/`87`/`15`/`22` tests), two byte-reproducible ordinary lifecycle packs (`148` entries), separate production-only consumer install/`playops --help` smoke, scoped F1/F2-only Kiro review, and 2026-10-30 final post-audit source/protected-state/security postcheck under `P3_WORKFLOW_CLOSED_WITH_DOCUMENTED_EXCEPTIONS` (preserving the explicitly accepted historical AGY lookup, runner, consumer, and final-continuation exceptions, not a clean exception-free run or blanket whole-repository Kiro audit), while this documentation-reconciled snapshot requires its own applicable verification, rebuilt artifact identity, and relevant review, and `0.4.1` remains uncommitted, untagged, and unpublished with frozen `v0.4.0` unchanged. Neither is a public-registry release, a production certification, or 1.0 API stability.
 - Known limitations include single-process token/state-file coordination, no cross-process locking, no enforced interactive prompt timer, and the unrecoverable insert-response edit-identity window. See the guides for the exact boundaries.
 
 ## Producer/contributor workflow (source checkout only)
 
-This section is **not required on an installed consumer**. From a clean trusted source checkout on Node 24, install development dependencies, then build the local artifact via the existing producer-side `prepack` hook:
+This section is **not required on an installed consumer**. From a clean trusted source checkout on Node 24, install development dependencies, then build and mode-normalize the local artifact via the existing producer-side `prepack` hook (`npm run build && node scripts/normalize-package-modes.mjs`, where `build` is `node scripts/clean-dist.mjs && tsc -p tsconfig.json`):
 
 ```sh
 NODE_ENV=development npm ci
@@ -119,7 +119,7 @@ mkdir -p artifacts
 NODE_ENV=development npm pack --pack-destination ./artifacts
 ```
 
-This creates `artifacts/playops-0.4.0.tgz`; there is no install-time TypeScript build on the consumer. Do **not** substitute a public-registry install or `npm publish` for this local flow. The full maintainer checklist — version identity, changelog, annotated tag, artifact hash, and rehearsal in an isolated copy — is in [the release process](docs/release-process.md).
+This producer command targets the candidate/intended artifact `artifacts/playops-0.4.1.tgz` (on the P3 candidate snapshot, two byte-reproducible ordinary lifecycle packs, separate production-only consumer install/`playops --help`, the six release gates, the five native script suites, and the scoped F1/F2-only Kiro review completed under `P3_WORKFLOW_CLOSED_WITH_DOCUMENTED_EXCEPTIONS`, whereas this documentation-reconciled tree requires its own applicable verification, rebuilt artifact pack, and relevant review, and `0.4.1` remains uncommitted, untagged, and unpublished); there is no install-time TypeScript build on the consumer and no `prepare`, `preinstall`, `install`, or `postinstall` hook. Do **not** substitute a public-registry install or `npm publish` for this local flow. The full maintainer checklist — version identity, changelog, annotated tag, artifact hash, and rehearsal in an isolated copy — is in [the release process](docs/release-process.md).
 
 For source-change verification:
 
@@ -138,4 +138,9 @@ The repository tracks `tests/fixtures/service-account.valid.json` as an
 explicitly fake credential fixture for automated tests. Real service-account
 credential files remain ignored. The fixture contains no usable credential
 material and allows a fresh clone to run the credential test suite without
-manual reconstruction.
+manual reconstruction; separately, the E1 setup in
+`tests/daemon-production-composition.test.ts` generates a temporary synthetic
+`service-account.json` inside a `mkdtempSync` root and explicitly normalizes and
+asserts the required `0640` mode on that temporary file under a restrictive
+umask while keeping production credential authorization and security policy
+unchanged.

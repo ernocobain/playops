@@ -15,6 +15,36 @@ the repository maintainers.
 
 ### Changed
 
+## [0.4.1] - 2026-10-24
+
+Unreleased development candidate (`0.4.1` remains uncommitted, untagged, and
+unpublished, and is **not** production readiness or Google mutation
+authorization; frozen `v0.4.0` remains unchanged. The prior 327-file P3
+candidate snapshot completed the six release gates, five native script suites,
+two byte-reproducible ordinary lifecycle packs, separate production-only
+consumer install/`playops --help` verification, the scoped F1/F2-only Kiro
+review, and the 2026-10-30 final post-audit source/protected-state/security
+postcheck under `P3_WORKFLOW_CLOSED_WITH_DOCUMENTED_EXCEPTIONS`; this
+documentation reconciliation creates a new snapshot requiring its own
+applicable verification, rebuilt `playops-0.4.1.tgz` artifact, and relevant
+review).
+
+### Added
+
+- Deterministic producer package-mode normalizer (`scripts/normalize-package-modes.mjs`, E2-A). Validates the repository root, ancestor directories, regular-file descriptor identity (`nlink === 1`, no symlinks), package metadata, and the complete allowlisted package payload before applying descriptor-bound `fchmodSync` mode changes. Normalizes declared `package.bin` entrypoints (`dist/cli/index.js`, `dist/daemon/main.js`) to exact `0755` and all other allowlisted payload files (`dist/**/*.js` runtime modules, `package.json`, `README.md`, `CHANGELOG.md`, `LICENSE`, `config/playops.example.yaml`, `config/playops.production.example.yaml`, the seven shipped `docs/*.md` operator guides, and `deploy/**` templates) to exact `0644`, while permitting verified paired TypeScript compiler byproducts (`.d.ts`, `.js.map`) in `dist/` that remain excluded from the tarball. Verified by 39 unit tests (covering idempotence, byte/umask preservation, allowlisted public `0644` and bin `0755` modes, refusal guards, and paired compiler-byproduct handling) plus one frozen smoke probe with 10 cases, runtime-JS regression, and 3 diagnostics.
+
+### Changed
+
+- Producer `prepack` lifecycle script (E2-B) is now `npm run build && node scripts/normalize-package-modes.mjs`, while `build` remains `node scripts/clean-dist.mjs && tsc -p tsconfig.json`. Synthetic dry-run lifecycle witnesses verified `clean -> compile -> normalize` ordering, build/normalizer failure propagation, and the continued absence of `prepare`, `preinstall`, `install`, and `postinstall` hooks (`E2_B_TECHNICALLY_VERIFIED` and fresh protected-state postcheck passed; engineering milestone accepted as `E2_B_ACCEPTED_WITH_DOCUMENTED_EXCEPTION` for a historical 300-second closeout-guard timeout, with prior `RUNNER_BLOCKED` receipts unchanged and no security, source-integrity, or release-gate waiver).
+- Deployment-template allowlist hardening in `scripts/package-content.mjs` and `scripts/package-content.test.mjs` (P3 exact two-file delta, F1/F2): the shared package-content validator now enforces an exact deployment-template allowlist (`deploy/systemd/playops.service` and `deploy/tmpfiles.d/playops.conf`), rejecting any extra or unexpected files under `deploy/` in shared `findPathViolations` (F1) and adding `DEPLOYMENT_TEMPLATE_FILES` to `REQUIRED_PAYLOAD_FILES`/`REQUIRED_FILES` so both templates are required to be present (F2).
+- Synthetic credential fixture test setup (E1) in `tests/daemon-production-composition.test.ts` generates a temporary `service-account.json` inside a `mkdtempSync` root and explicitly normalizes and asserts the required `0640` file mode on that temporary file (distinct from the separately tracked `tests/fixtures/service-account.valid.json` fake fixture used for fresh-clone tests) so daemon production-composition tests remain deterministic under a restrictive umask (`0077`). Production credential authorization, group-separation, and fail-closed secret-file security policy are unchanged.
+- Candidate metadata preparation and release-documentation reconciliation (E2-C1 / post-P3 docs sync): updated `package.json`, `package-lock.json` (root and `packages[""]`), `scripts/package-acceptance.mjs` release-version assertions, and release documentation (`README.md`, `CHANGELOG.md`, `docs/release-process.md`) to `0.4.1` with all dependencies, lockfile edges, and `private: true` unchanged.
+
+### Known limitations
+
+- **Unreleased development candidate — P3 snapshot verified, reconciled documentation snapshot pending its own verification:** On the 327-file P3 candidate snapshot (incorporating the exact two-file P3 delta), all six release gates passed (`lint`, `test:run` with `3271` executed tests in `145` files, `typecheck`, `format:check`, `build`, and `test:package` with `123` checks, zero failures, and `networkCallsObserved` empty), all five native script suites passed (`13`, `39`, `87`, `15`, and `22` tests respectively), two ordinary lifecycle `npm pack` runs were byte-reproducible (`148` entries), separate production-only consumer install and `playops --help` passed, the scoped F1/F2-only Kiro review completed, and the final post-audit source/protected-state/security postcheck completed on `2026-10-30` under classification `P3_WORKFLOW_CLOSED_WITH_DOCUMENTED_EXCEPTIONS` (preserving the explicitly accepted historical AGY lookup, runner, consumer, and final-continuation exceptions, not a clean exception-free run or blanket whole-repository Kiro audit). This documentation reconciliation creates a new working-tree snapshot whose own applicable verification, rebuilt `playops-0.4.1.tgz` artifact identity, and relevant review remain required; `0.4.1` remains uncommitted, untagged, and unpublished, and frozen `v0.4.0` is unchanged.
+- **Production deployment, provisioning, daemon rollout, and R6A remain blocked:** All `0.4.0` deployment and operational blocks remain in force (independent-administrator handoff, operator privilege removal, credential rotation to a new production credential, administrator-owned `/opt/playops/node24` runtime, `/etc/playops` provisioning, and unverified live Google mutation authorization).
+
 ## [0.4.0] - 2026-10-10
 
 ### Added
