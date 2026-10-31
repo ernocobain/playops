@@ -209,6 +209,19 @@ function acquireValidatedRegularFile(rootDir, relPath, desiredMode, openFds, fsO
 }
 
 const DIST_BYPRODUCT_SUFFIXES = Object.freeze([".d.ts", ".js.map"]);
+const APPROVED_DEPLOYMENT_FILE_SET = new Set(DEPLOYMENT_TEMPLATE_FILES);
+const APPROVED_DEPLOYMENT_DIR_SET = new Set(
+  DEPLOYMENT_TEMPLATE_FILES.flatMap((relPath) => {
+    const segments = relPath.split("/");
+    const dirs = [];
+    let current = "";
+    for (const segment of segments.slice(0, -1)) {
+      current = current ? `${current}/${segment}` : segment;
+      dirs.push(current);
+    }
+    return dirs;
+  }),
+);
 
 function classifyDistFileName(name) {
   if (name.endsWith(".js")) {
@@ -334,6 +347,68 @@ function discoverCompiledDistModules(rootDir, fsOps) {
   return compiledFiles.sort();
 }
 
+function discoverDeploymentTemplateFiles(rootDir, fsOps) {
+  const deployFull = resolve(rootDir, "deploy");
+  if (dirname(deployFull) !== rootDir || basename(deployFull) !== "deploy") {
+    throw new Error("deploy boundary is invalid");
+  }
+  assertVerifiedDirectory(deployFull, "deploy directory", fsOps);
+  const discoveredFiles = [];
+
+  function walkDeployDirectory(dirRel, dirFull) {
+    const names = [...fsOps.readdirSync(dirFull)].sort();
+    for (const name of names) {
+      if (typeof name !== "string" || name.length === 0 || name.startsWith(".")) {
+        throw new Error(`unexpected hidden or invalid entry in deploy: ${dirRel}/${String(name)}`);
+      }
+      const childRel = `${dirRel}/${name}`;
+      assertSafeRelativePath(childRel);
+      const childFull = resolve(rootDir, childRel);
+      if (
+        dirname(childFull) !== dirFull ||
+        basename(childFull) !== name ||
+        relative(rootDir, childFull) !== childRel
+      ) {
+        throw new Error(`deploy entry escaped directory boundary: ${childRel}`);
+      }
+      const childStat = fsOps.lstatSync(childFull);
+      if (childStat.isSymbolicLink()) {
+        throw new Error(`symbolic link is not allowed in deploy: ${childRel}`);
+      }
+      if (childStat.isDirectory()) {
+        if (!APPROVED_DEPLOYMENT_DIR_SET.has(childRel)) {
+          throw new Error(`unexpected directory in deploy: ${childRel}`);
+        }
+        assertVerifiedDirectory(childFull, `deploy directory ${childRel}`, fsOps);
+        walkDeployDirectory(childRel, childFull);
+      } else if (childStat.isFile()) {
+        const violations = findPathViolations(childRel);
+        if (!APPROVED_DEPLOYMENT_FILE_SET.has(childRel) || violations.length > 0) {
+          const reason = violations.length > 0 ? `: ${violations.join(", ")}` : "";
+          throw new Error(`unexpected file in deploy: ${childRel}${reason}`);
+        }
+        if (childStat.nlink !== 1) {
+          throw new Error(
+            `target regular file must have nlink === 1 (got ${String(childStat.nlink)}): ${childRel}`,
+          );
+        }
+        discoveredFiles.push(childRel);
+      } else {
+        throw new Error(`non-regular entry is not allowed in deploy: ${childRel}`);
+      }
+    }
+  }
+
+  walkDeployDirectory("deploy", deployFull);
+  const discoveredFileSet = new Set(discoveredFiles);
+  for (const requiredTemplate of DEPLOYMENT_TEMPLATE_FILES) {
+    if (!discoveredFileSet.has(requiredTemplate)) {
+      throw new Error(`missing required deployment template: ${requiredTemplate}`);
+    }
+  }
+  return discoveredFiles.sort();
+}
+
 function validateDeclaredBinPaths(metadata) {
   if (typeof metadata !== "object" || metadata === null || Array.isArray(metadata)) {
     throw new Error("package metadata must be a non-null object");
@@ -450,6 +525,7 @@ export function normalizePackageModes(options, ...extraArgs) {
       throw new Error("package.bin entrypoints do not match the approved PlayOps contract");
     }
 
+    const deploymentTemplateFiles = discoverDeploymentTemplateFiles(rootDir, fsOps);
     const compiledDistFiles = discoverCompiledDistModules(rootDir, fsOps);
     const compiledDistSet = new Set(compiledDistFiles);
 
@@ -464,23 +540,20 @@ export function normalizePackageModes(options, ...extraArgs) {
       }
     }
 
-    const staticOrdinaryFiles = [
-      ...ROOT_PAYLOAD_FILES,
-      ...OPERATOR_DOC_FILES,
-      ...DEPLOYMENT_TEMPLATE_FILES,
-    ];
-    for (const staticPath of staticOrdinaryFiles) {
-      assertSafeRelativePath(staticPath);
-      const violations = findPathViolations(staticPath);
+    const staticOrdinaryFiles = [...ROOT_PAYLOAD_FILES, ...OPERATOR_DOC_FILES];
+    const ordinaryPayloadFiles = [...staticOrdinaryFiles, ...deploymentTemplateFiles];
+    for (const ordinaryPath of ordinaryPayloadFiles) {
+      assertSafeRelativePath(ordinaryPath);
+      const violations = findPathViolations(ordinaryPath);
       if (violations.length > 0) {
-        throw new Error(`unsafe contract path ${staticPath}: ${violations.join(", ")}`);
+        throw new Error(`unsafe contract path ${ordinaryPath}: ${violations.join(", ")}`);
       }
-      if (declaredBinPaths.has(staticPath)) {
-        throw new Error(`static payload file must not be marked executable: ${staticPath}`);
+      if (declaredBinPaths.has(ordinaryPath)) {
+        throw new Error(`static payload file must not be marked executable: ${ordinaryPath}`);
       }
     }
 
-    const allTargetPaths = [...staticOrdinaryFiles, ...compiledDistFiles];
+    const allTargetPaths = [...ordinaryPayloadFiles, ...compiledDistFiles];
     assertPackageContents(allTargetPaths, metadata, compiledDistFiles);
 
     const acquiredTargets = [packageJsonTarget];

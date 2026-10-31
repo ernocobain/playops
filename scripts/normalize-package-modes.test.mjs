@@ -372,6 +372,58 @@ for (const refusalCase of [
     setup: (rootDir) => mkdirSync(resolve(rootDir, "dist/empty-subdir"), { recursive: true }),
     pattern: /unexpected empty directory in dist: dist\/empty-subdir/u,
   },
+  {
+    name: "extra direct file in deploy",
+    setup: (rootDir) => writeModeFile(rootDir, "deploy/unapproved.conf", "# unapproved\n", 0o644),
+    pattern:
+      /unexpected file in deploy: deploy\/unapproved\.conf: is not an approved deployment template/u,
+  },
+  {
+    name: "extra nested file in deploy/systemd",
+    setup: (rootDir) =>
+      writeModeFile(rootDir, "deploy/systemd/unapproved.conf", "# unapproved\n", 0o644),
+    pattern:
+      /unexpected file in deploy: deploy\/systemd\/unapproved\.conf: is not an approved deployment template/u,
+  },
+  {
+    name: "extra nested file in deploy/tmpfiles.d",
+    setup: (rootDir) =>
+      writeModeFile(rootDir, "deploy/tmpfiles.d/unapproved.conf", "# unapproved\n", 0o644),
+    pattern:
+      /unexpected file in deploy: deploy\/tmpfiles\.d\/unapproved\.conf: is not an approved deployment template/u,
+  },
+  {
+    name: "hidden file in deploy",
+    setup: (rootDir) => writeModeFile(rootDir, "deploy/.hidden.conf", "# hidden\n", 0o644),
+    pattern: /unexpected hidden or invalid entry in deploy: deploy\/\.hidden\.conf/u,
+  },
+  {
+    name: "hidden nested file in deploy/systemd",
+    setup: (rootDir) =>
+      writeModeFile(rootDir, "deploy/systemd/.hidden.service", "# hidden\n", 0o644),
+    pattern: /unexpected hidden or invalid entry in deploy: deploy\/systemd\/\.hidden\.service/u,
+  },
+  {
+    name: "unexpected directory in deploy",
+    setup: (rootDir) => mkdirSync(resolve(rootDir, "deploy/extra-dir"), { recursive: true }),
+    pattern: /unexpected directory in deploy: deploy\/extra-dir/u,
+  },
+  {
+    name: "unexpected nested directory in deploy/systemd",
+    setup: (rootDir) =>
+      mkdirSync(resolve(rootDir, "deploy/systemd/extra-dir"), { recursive: true }),
+    pattern: /unexpected directory in deploy: deploy\/systemd\/extra-dir/u,
+  },
+  {
+    name: "missing required deployment template deploy/systemd/playops.service",
+    setup: (rootDir) => rmSync(resolve(rootDir, "deploy/systemd/playops.service")),
+    pattern: /missing required deployment template: deploy\/systemd\/playops\.service/u,
+  },
+  {
+    name: "missing required deployment template deploy/tmpfiles.d/playops.conf",
+    setup: (rootDir) => rmSync(resolve(rootDir, "deploy/tmpfiles.d/playops.conf")),
+    pattern: /missing required deployment template: deploy\/tmpfiles\.d\/playops\.conf/u,
+  },
 ]) {
   test(`refuses ${refusalCase.name} without mutating payload modes`, (t) => {
     const { rootDir } = createPackageFixture(t);
@@ -380,6 +432,18 @@ for (const refusalCase of [
     assert.throws(() => normalizePackageModes(rootDir), refusalCase.pattern);
     assert.equal(readActualMode(rootDir, "README.md"), INITIAL_ORDINARY_MODE);
     assert.equal(readActualMode(rootDir, "dist/cli/index.js"), INITIAL_BIN_MODE);
+    assert.equal(readActualMode(rootDir, "dist/daemon/main.js"), INITIAL_BIN_MODE);
+    for (const templateRelPath of DEPLOYMENT_TEMPLATE_FILES) {
+      let exists;
+      try {
+        exists = lstatSync(resolve(rootDir, templateRelPath)).isFile();
+      } catch {
+        exists = false;
+      }
+      if (exists) {
+        assert.equal(readActualMode(rootDir, templateRelPath), INITIAL_ORDINARY_MODE);
+      }
+    }
   });
 }
 
@@ -491,6 +555,114 @@ for (const linkOrTypeCase of [
     },
     pattern: /non-regular entry is not allowed in dist: dist\/fifo\.pipe/u,
   },
+  {
+    name: "symlinked deployment template in deploy",
+    setup: (rootDir) => {
+      const target = writeModeFile(rootDir, "outside-playops.service", "[Unit]\n", 0o600);
+      rmSync(resolve(rootDir, "deploy/systemd/playops.service"));
+      symlinkSync(target, resolve(rootDir, "deploy/systemd/playops.service"));
+    },
+    pattern: /symbolic link is not allowed in deploy: deploy\/systemd\/playops\.service/u,
+  },
+  {
+    name: "symlinked extra file in deploy",
+    setup: (rootDir) => {
+      const target = writeModeFile(rootDir, "outside-deploy.conf", "# outside\n", 0o600);
+      symlinkSync(target, resolve(rootDir, "deploy/unapproved-link.conf"));
+    },
+    pattern: /symbolic link is not allowed in deploy: deploy\/unapproved-link\.conf/u,
+  },
+  {
+    name: "symlinked deploy root directory",
+    setup: (rootDir) => {
+      const altDeploy = resolve(rootDir, "alt-deploy");
+      mkdirSync(altDeploy, { recursive: true });
+      for (const relPath of DEPLOYMENT_TEMPLATE_FILES) {
+        writeModeFile(rootDir, `alt-${relPath}`, "# template\n", INITIAL_ORDINARY_MODE);
+      }
+      rmSync(resolve(rootDir, "deploy"), { recursive: true, force: true });
+      symlinkSync(altDeploy, resolve(rootDir, "deploy"));
+    },
+    pattern: /deploy directory must not be a symbolic link/u,
+  },
+  {
+    name: "symlinked subdirectory inside deploy",
+    setup: (rootDir) => {
+      const altSystemd = resolve(rootDir, "alt-systemd");
+      mkdirSync(altSystemd, { recursive: true });
+      writeModeFile(rootDir, "alt-systemd/playops.service", "[Unit]\n", INITIAL_ORDINARY_MODE);
+      rmSync(resolve(rootDir, "deploy/systemd"), { recursive: true, force: true });
+      symlinkSync(altSystemd, resolve(rootDir, "deploy/systemd"));
+    },
+    pattern: /symbolic link is not allowed in deploy: deploy\/systemd/u,
+  },
+  {
+    name: "hardlinked deployment template in deploy (nlink > 1)",
+    setup: (rootDir) => {
+      linkSync(
+        resolve(rootDir, "deploy/systemd/playops.service"),
+        resolve(rootDir, "playops-service.hardlink"),
+      );
+    },
+    pattern: /target regular file must have nlink === 1.*deploy\/systemd\/playops\.service/u,
+  },
+  {
+    name: "directory replacing a required deployment template in deploy",
+    setup: (rootDir) => {
+      rmSync(resolve(rootDir, "deploy/systemd/playops.service"));
+      mkdirSync(resolve(rootDir, "deploy/systemd/playops.service"));
+    },
+    pattern: /unexpected directory in deploy: deploy\/systemd\/playops\.service/u,
+  },
+  {
+    name: "regular file replacing an approved deployment subdirectory",
+    setup: (rootDir) => {
+      rmSync(resolve(rootDir, "deploy/systemd"), { recursive: true, force: true });
+      writeModeFile(rootDir, "deploy/systemd", "# not a dir\n", INITIAL_ORDINARY_MODE);
+    },
+    pattern: /unexpected file in deploy: deploy\/systemd: is not an approved deployment template/u,
+  },
+  {
+    name: "non-regular special entry in deploy via partial fs override",
+    setup: (rootDir) => {
+      const deployPath = resolve(rootDir, "deploy");
+      const specialFull = resolve(deployPath, "fifo.pipe");
+      return {
+        fs: {
+          readdirSync(targetPath) {
+            const entries = readdirSync(targetPath);
+            return targetPath === deployPath ? [...entries, "fifo.pipe"] : entries;
+          },
+          lstatSync(targetPath) {
+            if (targetPath === specialFull) {
+              return {
+                isSymbolicLink: () => false,
+                isDirectory: () => false,
+                isFile: () => false,
+              };
+            }
+            return lstatSync(targetPath);
+          },
+        },
+      };
+    },
+    pattern: /non-regular entry is not allowed in deploy: deploy\/fifo\.pipe/u,
+  },
+  {
+    name: "unsafe entry name in deploy via partial fs override",
+    setup: (rootDir) => {
+      const deployPath = resolve(rootDir, "deploy");
+      return {
+        fs: {
+          readdirSync(targetPath) {
+            const entries = readdirSync(targetPath);
+            return targetPath === deployPath ? [...entries, "bad\\entry.conf"] : entries;
+          },
+        },
+      };
+    },
+    pattern: /unsafe relative path/u,
+  },
 ]) {
   test(`refuses ${linkOrTypeCase.name}`, (t) => {
     const { rootDir } = createPackageFixture(t);
@@ -502,6 +674,20 @@ for (const linkOrTypeCase of [
     );
     assert.equal(readActualMode(rootDir, "LICENSE"), INITIAL_ORDINARY_MODE);
     assert.equal(readActualMode(rootDir, "dist/daemon/main.js"), INITIAL_BIN_MODE);
+    let tmpfilesExists;
+    try {
+      tmpfilesExists =
+        !lstatSync(resolve(rootDir, "deploy")).isSymbolicLink() &&
+        lstatSync(resolve(rootDir, "deploy/tmpfiles.d/playops.conf")).isFile();
+    } catch {
+      tmpfilesExists = false;
+    }
+    if (tmpfilesExists) {
+      assert.equal(
+        readActualMode(rootDir, "deploy/tmpfiles.d/playops.conf"),
+        INITIAL_ORDINARY_MODE,
+      );
+    }
   });
 }
 
@@ -587,4 +773,25 @@ test("enforces root boundary, path-escape, option, and metadata contract guards"
     () => normalizePackageModes(missingModuleRoot),
     /missing required compiled module: dist\/approvals\/challenge\.js/u,
   );
+
+  for (const requiredTemplate of DEPLOYMENT_TEMPLATE_FILES) {
+    const { rootDir: missingTemplateRoot } = createPackageFixture(t, {
+      omitFiles: [requiredTemplate],
+    });
+    const remainingTemplate = DEPLOYMENT_TEMPLATE_FILES.find(
+      (candidate) => candidate !== requiredTemplate,
+    );
+    assert.throws(
+      () => normalizePackageModes(missingTemplateRoot),
+      new RegExp(
+        `missing required deployment template: ${requiredTemplate.replaceAll(".", "\\.")}`,
+        "u",
+      ),
+    );
+    assert.equal(readActualMode(missingTemplateRoot, "README.md"), INITIAL_ORDINARY_MODE);
+    assert.equal(readActualMode(missingTemplateRoot, "dist/cli/index.js"), INITIAL_BIN_MODE);
+    if (remainingTemplate !== undefined) {
+      assert.equal(readActualMode(missingTemplateRoot, remainingTemplate), INITIAL_ORDINARY_MODE);
+    }
+  }
 });

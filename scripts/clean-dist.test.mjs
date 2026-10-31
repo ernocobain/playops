@@ -6,9 +6,11 @@ import {
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -171,6 +173,84 @@ test("ordinary build and npm prepack remove obsolete outputs and emit only the c
     assertOutsidePreserved(f);
   } finally {
     rmSync(f.base, { recursive: true, force: true });
+  }
+});
+
+test("ordinary npm pack lifecycle produces a real archive for valid deploy inventory and refuses extra direct or nested deploy files with no tarball output", () => {
+  const validFixture = fixture();
+  try {
+    symlinkSync(join(root, "node_modules"), join(validFixture.repo, "node_modules"), "dir");
+    const packDir = join(validFixture.base, "pack-out");
+    mkdirSync(packDir, { recursive: true });
+    const packed = spawnSync(
+      process.execPath,
+      [npmCli, "pack", "--json", "--pack-destination", packDir],
+      {
+        cwd: validFixture.repo,
+        encoding: "utf8",
+        timeout: 30_000,
+        env: { PATH: process.env.PATH ?? "", TMPDIR: validFixture.base, NODE_ENV: "development" },
+      },
+    );
+    assert.equal(packed.status, 0, packed.stderr);
+    const manifest = JSON.parse(packed.stdout.slice(packed.stdout.indexOf("[")))[0];
+    const tarballPath = join(packDir, manifest.filename);
+    assert.ok(existsSync(tarballPath), "expected real tarball archive on disk");
+    assert.ok(statSync(tarballPath).size > 0);
+    const deployPaths = manifest.files
+      .map((entry) => entry.path)
+      .filter((path) => path.startsWith("deploy/"))
+      .sort();
+    assert.deepEqual(deployPaths, [...DEPLOYMENT_TEMPLATE_FILES].sort());
+    assertOutsidePreserved(validFixture);
+  } finally {
+    rmSync(validFixture.base, { recursive: true, force: true });
+  }
+
+  for (const unapprovedRelPath of ["deploy/unapproved.conf", "deploy/systemd/unapproved.conf"]) {
+    const invalidFixture = fixture();
+    try {
+      symlinkSync(join(root, "node_modules"), join(invalidFixture.repo, "node_modules"), "dir");
+      const packDir = join(invalidFixture.base, "pack-out");
+      mkdirSync(packDir, { recursive: true });
+      const unapprovedFullPath = join(invalidFixture.repo, unapprovedRelPath);
+      mkdirSync(dirname(unapprovedFullPath), { recursive: true });
+      writeFileSync(unapprovedFullPath, "# unapproved deployment entry\n");
+
+      const refused = spawnSync(
+        process.execPath,
+        [npmCli, "pack", "--json", "--pack-destination", packDir],
+        {
+          cwd: invalidFixture.repo,
+          encoding: "utf8",
+          timeout: 30_000,
+          env: {
+            PATH: process.env.PATH ?? "",
+            TMPDIR: invalidFixture.base,
+            NODE_ENV: "development",
+          },
+        },
+      );
+      assert.notEqual(refused.status, 0, `expected npm pack to refuse ${unapprovedRelPath}`);
+      assert.match(
+        `${refused.stdout}\n${refused.stderr}`,
+        new RegExp(
+          `Refusing package mode normalization:.*unexpected file in deploy: ${unapprovedRelPath.replaceAll(".", "\\.")}`,
+          "su",
+        ),
+      );
+      assert.deepEqual(
+        readdirSync(packDir).filter((name) => name.endsWith(".tgz")),
+        [],
+      );
+      assert.deepEqual(
+        readdirSync(invalidFixture.repo).filter((name) => name.endsWith(".tgz")),
+        [],
+      );
+      assertOutsidePreserved(invalidFixture);
+    } finally {
+      rmSync(invalidFixture.base, { recursive: true, force: true });
+    }
   }
 });
 

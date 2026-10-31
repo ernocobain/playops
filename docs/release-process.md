@@ -158,16 +158,19 @@ ordinary `npm pack`, so deleted or renamed modules cannot survive as stale
 compiled package entries and restrictive caller `umask` values (such as `0077`)
 do not leak into packed file permissions. `scripts/normalize-package-modes.mjs`
 validates the repository root, ancestor directories, regular-file descriptor
-identity (`nlink === 1`, no symlinks), package metadata, and the allowlisted
-payload (while permitting verified paired `.d.ts` and `.js.map` compiler
-byproducts in `dist/` that do not ship), then sets declared `package.bin`
-entrypoints (`dist/cli/index.js`, `dist/daemon/main.js`) to exact mode `0755`
-and all other shipped payload files (compiled `dist/**/*.js`, root payload
-files, operator guides, and `deploy/**` templates) to exact mode `0644`. The
-manifest keeps the no-`prepare`/no-`preinstall`/no-`install`/no-`postinstall`
-contract. Do not disable lifecycle scripts for release packaging. A pack with
-`--ignore-scripts` is only a diagnostic of already-built output, not the release
-build procedure.
+identity (`nlink === 1`, no symlinks), package metadata, the actual on-disk
+`deploy/` directory inventory (`discoverDeploymentTemplateFiles`, rejecting any
+unapproved direct or nested files, directories, symlinks, hardlinks, or special
+entries and requiring both `deploy/systemd/playops.service` and
+`deploy/tmpfiles.d/playops.conf`), and the allowlisted payload (while
+permitting verified paired `.d.ts` and `.js.map` compiler byproducts in `dist/`
+that do not ship), then sets declared `package.bin` entrypoints
+(`dist/cli/index.js`, `dist/daemon/main.js`) to exact mode `0755` and all other
+shipped payload files (compiled `dist/**/*.js`, root payload files, operator
+guides, and `deploy/**` templates) to exact mode `0644`. The manifest keeps the
+no-`prepare`/no-`preinstall`/no-`install`/no-`postinstall` contract. Do not
+disable lifecycle scripts for release packaging. A pack with `--ignore-scripts`
+is only a diagnostic of already-built output, not the release build procedure.
 
 Compare normalized relative package entry lists, normalized file modes (`0755`
 for declared `bin` entrypoints and `0644` for all other shipped files), and
@@ -179,40 +182,53 @@ archive-metadata or file-mode differences do **not** waive an explicitly
 required byte-reproducibility check. Record each observed archive hash
 separately rather than substituting a hash from another build.
 
-For the `0.4.1` unreleased development candidate currently in preparation:
+For the `0.4.1` unreleased development candidate:
 
-- E1 synthetic credential fixture mode normalization (`0640` under restrictive
-  umask), E2-A normalizer implementation and 39 unit tests (plus one frozen
+- Historical preparation milestones include E1 synthetic credential fixture mode
+  normalization (`0640` under restrictive umask), initial E2-A normalizer
+  implementation (historically verified at E2-A by 39 unit tests plus one frozen
   smoke probe with 10 cases, runtime-JS regression, and 3 diagnostics), E2-B
   `prepack` wiring with synthetic dry-run lifecycle witnesses
   (`clean -> compile -> normalize`, failure propagation, and no install hooks;
   `E2_B_TECHNICALLY_VERIFIED` and accepted as
-  `E2_B_ACCEPTED_WITH_DOCUMENTED_EXCEPTION`), and the P3 exact two-file delta
-  in `scripts/package-content.mjs` and `scripts/package-content.test.mjs`
-  where the shared package-content validator enforces the exact
-  deployment-template allowlist (rejecting extra files under `deploy/` in shared
-  `findPathViolations` for F1 and adding `DEPLOYMENT_TEMPLATE_FILES` to
-  `REQUIRED_PAYLOAD_FILES`/`REQUIRED_FILES` so both
-  `deploy/systemd/playops.service` and `deploy/tmpfiles.d/playops.conf` are
-  required for F2) are complete.
-- On the 327-file P3 candidate snapshot, all six release gates (`lint`,
-  `test:run` with `3271` executed tests in `145` files, `typecheck`,
-  `format:check`, `build`, and `test:package` with `123` checks, zero failures,
-  and `networkCallsObserved` empty), all five native script suites (`13`, `39`,
-  `87`, `15`, and `22` tests respectively), two byte-reproducible ordinary
-  lifecycle `npm pack` runs (`148` entries), separate production-only consumer
-  install and `playops --help` smoke, the scoped F1/F2-only Kiro review, and
-  the `2026-10-30` final post-audit source/protected-state/security postcheck
-  completed under `P3_WORKFLOW_CLOSED_WITH_DOCUMENTED_EXCEPTIONS`, preserving
-  the explicitly accepted historical AGY lookup, runner, consumer, and
-  final-continuation exceptions (not a clean exception-free run or blanket
-  whole-repository Kiro audit).
-- Reconciling the release documentation in `README.md`, `CHANGELOG.md`, and
-  `docs/release-process.md` creates a new working-tree snapshot that is not yet
-  verified as a current tree or rebuilt `playops-0.4.1.tgz` artifact and
-  requires its own applicable release-process verification, rebuilt artifact
-  identity, and relevant review; `0.4.1` remains uncommitted, untagged, and
-  unpublished, and frozen `v0.4.0` is unchanged.
+  `E2_B_ACCEPTED_WITH_DOCUMENTED_EXCEPTION` with prior `RUNNER_BLOCKED` receipts
+  unchanged), the P3 exact two-file delta in `scripts/package-content.mjs` and
+  `scripts/package-content.test.mjs` enforcing the shared deployment-template
+  allowlist (F1/F2), and the initial `0.4.1` metadata/documentation preparation
+  committed and pushed for review as `095fc3f551e37f84ad96ef2296cbf159583f07f5`
+  on `2026-10-30` (after its initial staged/uncommitted preparation state).
+- Following focused Codex packaging/preparation review of commit
+  `095fc3f551e37f84ad96ef2296cbf159583f07f5` (which is a scoped
+  packaging/preparation review, not a full-repository audit), the current
+  candidate adds live on-disk `deploy/` inventory discovery and validation in
+  `scripts/normalize-package-modes.mjs` (`discoverDeploymentTemplateFiles`)
+  together with unit refusal/guard coverage in
+  `scripts/normalize-package-modes.test.mjs` and ordinary `npm pack` lifecycle
+  regression tests in `scripts/clean-dist.test.mjs` (verifying real tarball
+  creation for valid `deploy/` inventory and refusal with no `.tgz` output for
+  direct or nested unapproved `deploy/` files).
+- Earlier verification counts, artifacts, and audit classifications — specifically
+  the 327-file P3 snapshot outcomes (`lint`, `test:run` with `3271` executed
+  tests in `145` files, `typecheck`, `format:check`, `build`, `test:package`
+  with `123` checks, zero failures, and `networkCallsObserved` empty; the five
+  native script suites at `13`, `39`, `87`, `15`, and `22` tests on that
+  snapshot; two byte-reproducible `148`-entry ordinary lifecycle `npm pack`
+  runs; separate production-only consumer install and `playops --help` smoke;
+  scoped F1/F2-only Kiro review; and the `2026-10-30` postcheck closed under
+  `P3_WORKFLOW_CLOSED_WITH_DOCUMENTED_EXCEPTIONS`, preserving the explicitly
+  accepted historical FAIL/BLOCKED AGY lookup, runner, consumer, and
+  final-continuation process exceptions rather than a clean exception-free run
+  or blanket whole-repository Kiro audit) — are historical records for their
+  respective earlier snapshots and do not serve as verification proof for
+  modified source.
+- Final release-gate, native-script, rebuilt `playops-0.4.1.tgz` artifact-hash,
+  consumer-smoke, and review/audit outcomes for the current packaging follow-up
+  candidate (and any subsequent snapshot) are supplied by external
+  snapshot-bound receipts generated by Hermes for that exact snapshot rather
+  than self-certifying or perpetually pending claims in tracked repository
+  files. `0.4.1` remains untagged and unpublished, no deployment, R6A, or live
+  Google mutation approval is granted, and frozen `v0.4.0` policy and tag remain
+  unchanged.
 
 ## 5. Tag contract and tag safety
 
