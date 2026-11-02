@@ -12,12 +12,22 @@ describe("Stage 3F.2 reconciliation coordination", () => {
     const requestId = challenge.approval?.requestId ?? "";
     const signature = await h.signRequest(requestId);
     const held = latch();
+    const entered = latch();
     h.faults.insertHold = held.promise;
+    const createEdit = h.gateway.createEdit;
+    h.gateway.createEdit = async () => {
+      entered.release();
+      return createEdit();
+    };
     const first = h.execute(requestId, signature);
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    const second = await h.execute(requestId, signature);
-    expect(["request_claim_held", "operation_in_progress"]).toContain(second.outcome);
-    held.release();
+    await entered.promise;
+    expect(await h.pendingStore.state(requestId)).toBe("consumed");
+    try {
+      const second = await h.execute(requestId, signature);
+      expect(second.outcome).toBe("request_already_consumed");
+    } finally {
+      held.release();
+    }
     expect(await first).toMatchObject({ outcome: "success", summary: "reconciliation_committed" });
     expect(h.calls.createEdit).toBe(1);
     expect(h.calls.deleteEdit).toBe(1);
