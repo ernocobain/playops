@@ -66,8 +66,8 @@ A release is **not** considered tagged if only `package.json` changed. The
 version bump, the lockfile update, the changelog entry, and the release
 documentation belong to the same commit that the annotated tag points at. The
 current prepared version in `package.json`, `package-lock.json` (root and
-`packages[""]`), and `CHANGELOG.md` is `0.4.2` (`v0.4.2` includes
-release-status documentation corrections and version-consistency updates).
+`packages[""]`), and `CHANGELOG.md` is `0.4.3` (`v0.4.3` includes the PR-first
+release procedure documentation).
 
 Verify consistency before tagging:
 
@@ -83,17 +83,26 @@ in the normal test suite.
 
 ## 3. Release order
 
-The intended order is fixed:
+The intended PR-first release order is fixed:
 
 ```text
-prepare version + changelog
+prepare version + changelog (on a release branch)
   → verification
-  → commit
-  → annotated tag
+  → commit (release branch)
+  → push branch + open pull request
+  → GitHub Actions `verify` PASS
+  → operator merge approval
+  → merge commit to master
+  → master CI PASS
+  → operator tag authorization
+  → annotated tag on the master merge commit
+  → (optional) GitHub Release (separate authorization)
 ```
 
-`CHANGELOG.md` must be finalized **before** verification, because the published
-artifact and the tag both belong to the commit that contains it.
+`CHANGELOG.md` must be finalized **before** verification, because the prepared
+release branch commit, the `master` merge commit, the published local tarball
+artifact, and the annotated tag on the `master` merge commit all require the
+consistent version, lockfile, changelog, and release documentation snapshot.
 
 ## 4. Maintainer release checklist
 
@@ -133,13 +142,23 @@ artifact and the tag both belong to the commit that contains it.
     exactly the prepared release (version, changelog, release documentation, and
     any intended source changes) and contains no credentials, state files, or
     scratch artifacts.
-15. Commit the release preparation with a conventional commit message.
-16. Create the **annotated** tag on that commit (section 5).
-17. Verify the tag points at the intended commit (section 5).
-18. Distribute the approved artifact to its intended consumers, together with the
-    recorded SHA-256.
-19. Push commits and tags **only when explicitly authorized**. Pushing is not
-    part of preparing a release.
+15. Commit the prepared release on a release branch (never directly on `master`)
+    with a conventional commit message.
+16. Push the release branch to the remote and open a pull request to `master`
+    when authorized.
+17. Let the GitHub Actions `CI` workflow (`verify` job) run on the pull request
+    and confirm `verify` reaches `PASS`.
+18. After `verify` `PASS` and explicit operator merge approval, merge the pull
+    request into `master` with a **merge commit**.
+19. Verify that the post-merge GitHub Actions `CI` run (`verify` job) on `master`
+    reaches `PASS`, and check out the exact `master` merge commit locally.
+20. After separate explicit operator tag authorization, create the **annotated**
+    tag `v${VERSION}` on the exact `master` merge commit and verify the tag
+    points at that `master` merge commit (section 5). Push the tag only when
+    explicitly authorized.
+21. Distribute the approved artifact to its intended consumers, together with the
+    recorded SHA-256 (and, only if separately authorized by the operator, create
+    an optional GitHub Release).
 
 Do not automate publication: no script in this repository publishes, pushes, or
 tags on its own.
@@ -246,7 +265,12 @@ version-consistency update) and the tagged `v0.4.1` release:
 
 ## 5. Tag contract and tag safety
 
-Releases use **annotated** tags:
+Releases use **annotated** tags created on the exact `master` **merge commit**
+(the commit on `master` whose tree contains the consistent `package.json`
+version, `package-lock.json`, `CHANGELOG.md`, and release documentation
+snapshot), only **after** the pull request has been merged to `master`, the
+`master` CI run (`verify` job) has passed, and the operator has given explicit
+tag authorization:
 
 ```sh
 VERSION="$(node -p "require('./package.json').version")"
@@ -257,7 +281,19 @@ git tag -a "v${VERSION}" -m "PlayOps v${VERSION}"
 without that tag is not a release, and a tag without the matching manifest,
 lockfile, and changelog entry is not a release either.
 
-Before tagging, verify all three of the following and require a clean tree:
+Tag safety rules:
+
+- **Do not tag the release branch commit by default:** the annotated tag goes on
+  the exact `master` merge commit after `master` CI passes and after explicit
+  operator tag authorization, not on the release branch commit.
+- **Never tag automatically:** no script, bot, or GitHub Actions workflow may
+  create or push a tag automatically.
+- **Never `git tag -f`:** never force-create or move a release tag.
+- **Never push a tag without authorization:** pushing `v${VERSION}` to the remote
+  requires separate explicit operator tag authorization.
+
+Before tagging, check out the verified `master` merge commit, verify all three
+of the following, and require a clean tree:
 
 ```sh
 git status --short
@@ -266,7 +302,9 @@ git tag --list "v${VERSION}"
 ```
 
 - `git status --short` must print nothing.
-- `git rev-parse HEAD` must be the intended release commit.
+- `git rev-parse HEAD` must be the intended `master` merge commit (whose tree
+  contains the consistent version, lockfile, changelog, and release
+  documentation snapshot, after `master` CI has passed).
 - `git tag --list "v${VERSION}"` must print nothing. If the tag already exists, **stop
   and review**: an existing release tag is never silently moved or overwritten.
 
@@ -274,7 +312,7 @@ Never use `git tag -f` for a normal release. If a tag was created in error and
 has not been distributed, delete it deliberately and re-tag the correct commit;
 if it has been distributed, publish a new version instead.
 
-After tagging, confirm the tag resolves to the release commit:
+After tagging, confirm the tag resolves to the intended `master` merge commit:
 
 ```sh
 git rev-parse "v${VERSION}^{commit}"
@@ -299,18 +337,103 @@ git show --stat "v${VERSION}"
 
 ## 7. Explicitly out of scope
 
-The following are **not** part of this release process and must not be added
-without a separate, explicit decision:
+A verify-only GitHub Actions CI workflow (`.github/workflows/ci.yml`, workflow
+name `CI`, single job `verify`) now exists in the repository to verify `push`
+and `pull_request` events targeting `master` (see "PR-first release workflow and
+GitHub CI integration" below), but automated release, publish, tag, or deploy
+workflows remain out of scope. The following are **not** part of this release
+process and must not be added without a separate, explicit decision:
 
-- GitHub Actions or any other release/publish workflow.
+- Automated GitHub Actions release, publish, tag, or deploy workflows (any
+  workflow beyond verify-only CI).
 - An automation release job, auto-version bot, `semantic-release`, `changesets`,
   or `release-please`.
 - Code signing, provenance attestation, or an update checker.
-- Public registry publication, GitHub releases, binaries, containers, and
-  installers.
+- Public registry publication (`npm publish`), GitHub releases automation,
+  binaries, containers, and installers.
 - Removing `private: true`.
 
-## 8. Release rehearsal
+## 8. PR-first release workflow and GitHub CI integration
+
+### Verify-only CI triggers and the `verify` check
+
+The repository defines a verify-only GitHub Actions workflow at
+`.github/workflows/ci.yml` with workflow name `CI` and a single job named
+`verify` (`runs-on: ubuntu-latest`, `permissions: contents: read`,
+`timeout-minutes: 30`). It triggers on:
+
+- `pull_request` targeting branch `master`.
+- `push` to branch `master`.
+
+On Node.js 24, the `verify` job runs:
+
+1. `npm ci`
+2. `npm run lint`
+3. `npm run typecheck`
+4. `npm run format:check`
+5. `npm run build`
+6. `npm run test:run` (Vitest unit and integration suite)
+7. `npm run test:package` (isolated package acceptance)
+8. Five native `node --test` suites: `scripts/clean-dist.test.mjs`,
+   `scripts/normalize-package-modes.test.mjs`,
+   `scripts/package-content.test.mjs`, `scripts/documentation-checks.test.mjs`,
+   and `scripts/release-version.test.mjs`
+9. `npm audit --omit=dev` (production dependency audit; the `minimatch` advisory
+   `GHSA-g3hv-75wg-m249` remains an accepted temporary risk affecting dev lint
+   tooling only)
+10. A two-`npm pack` reproducibility check confirming both packed tarballs yield
+    identical non-empty SHA-256 digests
+
+The `CI` workflow is strictly **verify-only**: it does **not** publish packages,
+create or push Git tags, push commits, create GitHub Releases, or deploy.
+
+### Required status check posture and emergency admin bypass rule
+
+- The intended required status check name is `verify` (the job in workflow `CI`,
+  provider GitHub Actions).
+- `verify` is **not yet enabled** as an enforced required status check in GitHub
+  branch protection (branch protection on `master` currently enforces only
+  force-push disabled and branch deletion disabled).
+- Because branch protection does not yet enforce `verify` automatically, the
+  maintainer must manually confirm that the GitHub Actions `verify` check has
+  completed with `PASS` on the pull request before merging and on `master` after
+  merging.
+- Administrator bypass of a failing or unverified check is an **emergency-only
+  documented path** requiring an explicit operator decision and recorded
+  justification; it is never a normal release procedure.
+
+### Operator approval boundaries
+
+Each external or irreversible release action has a separate operator boundary:
+
+- **Merge approval:** Opening a release pull request does not authorize merging.
+  Merging the release branch into `master` (using a merge commit) requires both
+  GitHub Actions `verify` `PASS` on the pull request and explicit operator merge
+  approval.
+- **Tag authorization:** Merging to `master` does not authorize tagging.
+  Creating and pushing the annotated tag `v${VERSION}` requires both the
+  post-merge `master` CI `verify` `PASS` and separate explicit operator tag
+  authorization. The annotated tag is placed on the exact `master` merge commit,
+  not on the release branch commit.
+- **GitHub Release authorization:** Creating a GitHub Release is optional and
+  requires separate explicit operator authorization distinct from merge approval
+  and tag authorization.
+- **Public npm registry publication out of scope:** `npm publish` remains out of
+  scope (`"private": true` remains in `package.json`).
+
+### Recovery when GitHub Actions billing or runner execution fails
+
+If a GitHub Actions `verify` run fails to start or aborts because of a GitHub
+Actions billing, quota, or runner availability failure:
+
+- **Do not retry automatically**, do not loop-poll or spam re-pushes, and do not
+  treat a billing or runner block as `verify` `PASS`.
+- Stop the release progression at the blocked gate, resolve the GitHub Actions
+  billing or runner issue first, and then manually re-run the failed workflow
+  job (or re-push once runner availability is restored) and wait for `verify` to
+  reach `PASS` before merging or tagging.
+
+## 9. Release rehearsal
 
 Before a first-time release, rehearse the process in an **isolated copy** rather
 than in the working repository:
@@ -323,13 +446,22 @@ than in the working repository:
 4. Run the installed `playops --help` smoke, and confirm the tarball contains
    `CHANGELOG.md` and ships no credentials, state, scratch files, sources, or
    tests, and that no application network call is required.
-5. Exercise the tag commands (section 5) **only** in the throwaway repository.
+5. Exercise the release branch, merge-commit, and tag commands (section 5)
+   **only** in the throwaway repository.
+
+The rehearsal also rehearses the `branch → PR → merge → tag-on-merge-commit`
+flow inside the throwaway repository: commit the prepared release on a throwaway
+release branch, simulate the pull request and `verify` check against the
+throwaway `master` branch, merge the release branch into `master` with an
+explicit merge commit (`git merge --no-ff`), and create and verify the annotated
+tag `v${VERSION}` on that throwaway `master` merge commit rather than on the
+release branch commit, without touching the real repository.
 
 The rehearsal proves the documented process is executable. It does not replace
 the checks in section 4 for the real repository, and it never tags, commits, or
 pushes the real repository.
 
-## 9. Limitations of this process
+## 10. Limitations of this process
 
 - The process is manual by design. Nothing in the repository enforces that a
   release was rehearsed, verified, or tagged correctly; the checks in section 2
@@ -349,7 +481,8 @@ pushes the real repository.
   on it. Do not replace it with real service-account material.
 - The dependency audit (`npm audit --omit=dev`, `npm audit`) reports the state of
   the recorded versions at release time; it is not a guarantee about future
-  advisories.
+  advisories. The `minimatch` advisory `GHSA-g3hv-75wg-m249` remains an accepted
+  temporary risk (dev lint tooling only).
 - Production deployment, host provisioning, daemon service installation, and
   R6A remain blocked. Live Google mutation authorization is not established by
   any release step and requires separate, explicitly authorized operational
