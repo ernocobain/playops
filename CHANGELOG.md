@@ -15,6 +15,12 @@ the repository maintainers.
 
 ### Changed
 
+## [0.4.3] - 2026-11-02
+
+### Changed
+
+- Documented the PR-first release procedure (release branch -> pull request -> GitHub Actions verify PASS -> operator merge approval -> merge commit -> master CI PASS -> operator tag authorization -> annotated tag on the master merge commit) and updated the annotated-tag contract accordingly.
+
 ## [0.4.2] - 2026-11-02
 
 ### Changed
