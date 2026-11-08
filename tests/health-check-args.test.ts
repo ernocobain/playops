@@ -226,6 +226,72 @@ describe("Phase 5.4 WP1a health check CLI argument parser", () => {
   ])("rejects duplicate, unknown, positional or malformed options: $token", ({ extra, token }) => {
     expectCliRejection(() => parseHealthCheckCommand([...DAILY_ARGS, ...extra]), token);
   });
+
+  it.each([
+    {
+      label: "ESC CSI",
+      args: [...DAILY_ARGS, "--bad\u001b[2Jtoken"],
+      expected: "--bad [2Jtoken",
+    },
+    {
+      label: "NUL",
+      args: [...DAILY_ARGS, "--bad\u0000token"],
+      expected: "--bad token",
+    },
+    {
+      label: "BEL",
+      args: [...DAILY_ARGS, "--bad\u0007token"],
+      expected: "--bad token",
+    },
+    {
+      label: "DEL",
+      args: [...DAILY_ARGS, "--bad\u007ftoken"],
+      expected: "--bad token",
+    },
+    {
+      label: "C1 CSI",
+      args: [...DAILY_ARGS, "--bad\u009btoken"],
+      expected: "--bad token",
+    },
+    {
+      label: "embedded CR/LF in flag-like value",
+      args: [
+        "--start",
+        "--bad\r\nvalue",
+        "--end",
+        "2026-09-25T07:00:00Z",
+        "--granularity",
+        "DAILY",
+      ],
+      expected: "--bad value",
+    },
+    {
+      label: "embedded CR/LF in timestamp value",
+      args: [
+        "--start",
+        "2026-09-24\r\nT07:00:00Z",
+        "--end",
+        "2026-09-25T07:00:00Z",
+        "--granularity",
+        "DAILY",
+      ],
+      expected: "--start",
+    },
+  ])("strips control characters from rejected CLI arguments ($label)", ({ args, expected }) => {
+    expectCliRejection(() => parseHealthCheckCommand(args), expected);
+    try {
+      parseHealthCheckCommand(args);
+      expect.unreachable("Expected HealthCheckCliError");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "";
+      expect(message.length).toBeGreaterThan(0);
+      expect(message).not.toContain("\r");
+      expect(message).not.toContain("\n");
+      // eslint-disable-next-line no-control-regex -- explicitly asserting absence of C0, DEL and C1 controls
+      expect(message).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/u);
+      expect(message).toContain(expected);
+    }
+  });
 });
 
 describe("Phase 5.4 WP1a runtime summary validator", () => {

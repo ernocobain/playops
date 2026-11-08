@@ -59,7 +59,8 @@ const SUMMARY_KEYS: readonly string[] = Object.freeze([
 ]);
 
 function sanitizeOneLine(text: string): string {
-  return text.replace(/[\r\n]+/g, " ").trim();
+  // eslint-disable-next-line no-control-regex -- untrusted CLI text must not carry terminal controls or NUL
+  return text.replace(/[\x00-\x1f\x7f-\x9f]+/gu, " ").trim();
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
