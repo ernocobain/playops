@@ -14,6 +14,7 @@ import {
 } from "../health/report.js";
 import { runAgent } from "../runtime/agent/index.js";
 import type { LlmAdapter } from "../runtime/llm/index.js";
+import { runHealthCheckCli } from "./health-check.js";
 
 export class HealthCliError extends Error {
   override readonly name = "HealthCliError";
@@ -165,7 +166,15 @@ export async function runHealthCli(
   args: readonly string[],
   io: HealthCliIo,
   deps: HealthCliDeps = {},
-): Promise<0 | 1> {
+): Promise<0 | 1 | 2> {
+  if (args[0] === "check") {
+    return runHealthCheckCli(args.slice(1), io, {
+      readSummary: async (input) => {
+        const composition = await (deps.compositionFactory ?? createLiveHealthComposition)();
+        return composition.summarySource.readSummary(input);
+      },
+    });
+  }
   let command: HealthCommand;
   try {
     command = parseHealthCommand(args);
