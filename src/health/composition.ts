@@ -28,9 +28,10 @@ import { HEALTH_COMPARISON_TOOL_NAME } from "./comparison.js";
 import { HEALTH_METRIC_KINDS, HEALTH_METRIC_SPECS, HealthError } from "./index.js";
 import type { HealthMetricGateway } from "./gateway.js";
 import { createReportingHealthMetricGateway } from "./reporting.js";
+import { createHealthSummarySource, type HealthSummarySource } from "./summary.js";
 import { createHealthMetricTool, type HealthMetricTool } from "./tools.js";
 import { createHealthThresholdTool, type HealthThresholdTool } from "./threshold-tool.js";
-import { HEALTH_THRESHOLDS_TOOL_NAME } from "./thresholds.js";
+import { buildHealthThresholdRules, HEALTH_THRESHOLDS_TOOL_NAME } from "./thresholds.js";
 
 /** Fixed-message configuration failure; raw values, paths and keys are never echoed. */
 export class HealthCompositionError extends Error {
@@ -75,6 +76,8 @@ export interface HealthComposition {
   readonly comparisonTool: HealthComparisonTool;
   /** Separate Phase 5.4 capability; never executed by health report. */
   readonly thresholdTool: HealthThresholdTool;
+  /** Read-only `health check` summary source; never writes audit alerts. */
+  readonly summarySource: HealthSummarySource;
 }
 
 /** Shared construction for production and fake-only tests; one Reporting client. */
@@ -107,6 +110,10 @@ export function createHealthComposition(
     gateway,
     auditLogPath: config.audit.logPath,
   });
+  const summarySource = createHealthSummarySource({
+    rules: buildHealthThresholdRules(config.health),
+    gateway,
+  });
   const registry = new ToolRegistry();
   for (const entry of tools) {
     registry.register(entry.tool);
@@ -126,6 +133,7 @@ export function createHealthComposition(
     tools,
     comparisonTool,
     thresholdTool,
+    summarySource,
   });
 }
 

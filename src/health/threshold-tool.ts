@@ -26,6 +26,7 @@ import {
   HEALTH_THRESHOLDS_TOOL_NAME,
   type HealthThresholdEvaluation,
   type HealthThresholdResult,
+  type HealthThresholdRule,
 } from "./thresholds.js";
 
 export const HEALTH_THRESHOLD_ALERT_EVENT = "health.threshold.alert";
@@ -49,12 +50,62 @@ export interface HealthThresholdToolOptions extends FetchHealthMetricOptions {
   /** Trusted audit fault-injection seam only, never part of the runtime tool input. */
   readonly appendAlert?: (entry: NewAuditEntry) => void | Promise<void>;
 }
+export interface ThresholdEvaluationContext {
+  readonly rules: readonly HealthThresholdRule[];
+  readonly gateway: HealthMetricGateway;
+  readonly fetchOptions?: FetchHealthMetricOptions;
+}
 
 function invalid(): HealthError {
   return new HealthError("Health threshold tool input or output is invalid.", "INVALID_ARGUMENT");
 }
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export function createThresholdInputParser(
+  rules: readonly HealthThresholdRule[],
+): (value: unknown) => HealthThresholdToolInput {
+  const inputKeys = ["startTime", "endTime", "granularity", "dimensions"];
+  return (value: unknown): HealthThresholdToolInput => {
+    if (!isRecord(value) || Object.keys(value).some((key) => !inputKeys.includes(key)))
+      throw invalid();
+    const query = {
+      startTime: value.startTime as string,
+      endTime: value.endTime as string,
+      granularity: value.granularity as HealthGranularity,
+      ...(value.dimensions !== undefined
+        ? { dimensions: value.dimensions as readonly string[] }
+        : {}),
+    };
+    // Basic validation also applies with zero enabled rules. Then preflight ALL
+    // enabled kinds, including DAILY-only wakeups, before any source access.
+    const validated = validateHealthMetricQuery({ ...query, kind: "crash_rate" });
+    for (const rule of rules)
+      validateHealthMetricQuery({ ...query, kind: rule.metricKind, metrics: [rule.metricName] });
+    return Object.freeze({
+      startTime: validated.window.startTimeUtc,
+      endTime: validated.window.endTimeUtc,
+      granularity: validated.window.granularity,
+      dimensions: validated.dimensions,
+    });
+  };
+}
+
+export async function evaluateThresholdWindow(
+  context: ThresholdEvaluationContext,
+  input: HealthThresholdToolInput,
+): Promise<HealthThresholdResult> {
+  const series: HealthMetricSeries[] = [];
+  for (const rule of context.rules)
+    series.push(
+      await fetchHealthMetricSeries(
+        context.gateway,
+        { ...input, kind: rule.metricKind, metrics: [rule.metricName] },
+        context.fetchOptions,
+      ),
+    );
+  return evaluateHealthThresholds(series, context.rules);
 }
 
 export function createHealthThresholdTool(
@@ -81,32 +132,8 @@ export function createHealthThresholdTool(
     ...(options.pageSize !== undefined ? { pageSize: options.pageSize } : {}),
     ...(options.maxPages !== undefined ? { maxPages: options.maxPages } : {}),
   };
-  const inputKeys = ["startTime", "endTime", "granularity", "dimensions"];
-  const inputSchema: ToolSchema<HealthThresholdToolInput> = {
-    parse(value) {
-      if (!isRecord(value) || Object.keys(value).some((key) => !inputKeys.includes(key)))
-        throw invalid();
-      const query = {
-        startTime: value.startTime as string,
-        endTime: value.endTime as string,
-        granularity: value.granularity as HealthGranularity,
-        ...(value.dimensions !== undefined
-          ? { dimensions: value.dimensions as readonly string[] }
-          : {}),
-      };
-      // Basic validation also applies with zero enabled rules. Then preflight ALL
-      // enabled kinds, including DAILY-only wakeups, before any source access.
-      const validated = validateHealthMetricQuery({ ...query, kind: "crash_rate" });
-      for (const rule of rules)
-        validateHealthMetricQuery({ ...query, kind: rule.metricKind, metrics: [rule.metricName] });
-      return Object.freeze({
-        startTime: validated.window.startTimeUtc,
-        endTime: validated.window.endTimeUtc,
-        granularity: validated.window.granularity,
-        dimensions: validated.dimensions,
-      });
-    },
-  };
+  const parseThresholdInput = createThresholdInputParser(rules);
+  const inputSchema: ToolSchema<HealthThresholdToolInput> = { parse: parseThresholdInput };
   const outputKeys = [
     "status",
     "enabledRuleCount",
@@ -254,16 +281,7 @@ export function createHealthThresholdTool(
     outputSchema,
     async execute(input) {
       const parsed = inputSchema.parse(input);
-      const series: HealthMetricSeries[] = [];
-      for (const rule of rules)
-        series.push(
-          await fetchHealthMetricSeries(
-            gateway,
-            { ...parsed, kind: rule.metricKind, metrics: [rule.metricName] },
-            fetchOptions,
-          ),
-        );
-      const result = evaluateHealthThresholds(series, rules);
+      const result = await evaluateThresholdWindow({ rules, gateway, fetchOptions }, parsed);
       let recordedAlertCount = 0;
       for (const breach of result.breaches) {
         try {

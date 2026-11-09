@@ -4,6 +4,7 @@ import {
   type HealthDimension,
   type HealthGranularity,
 } from "../health/index.js";
+import { UnsupportedThresholdGranularityError } from "../health/summary-errors.js";
 import { parseUtcInstant } from "../health/time.js";
 
 export class HealthCheckCliError extends Error {
@@ -298,8 +299,8 @@ export interface HealthCheckCliIo {
 }
 
 export interface HealthCheckCliDeps {
-  /** Caller-injected already-computed six-field runtime summary. This module never fetches or composes. */
-  readonly readSummary?: () => unknown | Promise<unknown>;
+  /** Caller-injected summary provider receiving the already-validated parsed input. */
+  readonly readSummary?: (input: HealthCheckInput) => unknown | Promise<unknown>;
 }
 
 export async function runHealthCheckCli(
@@ -334,8 +335,12 @@ export async function runHealthCheckCli(
 
   let rawSummary: unknown;
   try {
-    rawSummary = await deps.readSummary();
-  } catch {
+    rawSummary = await deps.readSummary(command.input);
+  } catch (error) {
+    if (error instanceof UnsupportedThresholdGranularityError) {
+      io.writeError(`${sanitizeOneLine(error.message)}\n`);
+      return 1;
+    }
     io.writeError("Health check runtime summary could not be produced.\n");
     return 1;
   }

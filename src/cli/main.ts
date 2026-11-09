@@ -92,6 +92,7 @@ export async function runCli(
         "  reviews   Triage reviews or prepare, approve, publish and verify a public reply",
         "  releases  Run an operator-bound release dry-run plan",
         "  health    Produce a dated health comparison report (stdout + saved file)",
+        "  health check  Check configured App Health thresholds (read-only)",
         "  daemon    Operator client for the local PlayOps release daemon",
         "",
         "daemon group:",
