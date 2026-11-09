@@ -13,7 +13,18 @@ the repository maintainers.
 
 ### Added
 
+- `playops health check`, a read-only CLI for configured App Health primary-metric thresholds. It prints a six-field summary (human or `--json`), uses exit `0` for no breach, `2` for a detected breach, and `1` for incomplete data, no data, disabled thresholds, invalid arguments, or runtime failure. It does not write audit alerts and does not perform Google mutations. This command is in the current source for the next pre-1.0 preparation; the published `v0.4.3` tarball predates it.
+
 ### Changed
+
+- Prepared operator documentation for the next minor release (`v0.5.0`): README, credential/configuration guide, audit-log guide, and operator-client exit-code guidance now distinguish `playops health check` from `health report` and from the separate `health.check_thresholds` runtime capability. Package version, source, tests, and security configuration remain unchanged.
+- Recorded the `2026-11-09` controlled live read-only health-check smoke: OAuth, Reporting metadata, and one Reporting query completed; the test app returned `NO_DATA` with exit `1`; no audit alert and no Publisher mutation occurred. This is connectivity/parsing evidence only.
+
+### Known limitations
+
+- The live smoke returned `NO_DATA` from Nagili Driver, a legacy non-production app with Internal Testing history that is no longer actively used. This is a possible explanation for the unavailable metrics, but the exact cause has not been proven. Threshold evaluation against real metric points, breach detection, and metric coverage remain unverified. A data-bearing non-production target is required before claiming those capabilities.
+- `NO_DATA` is not a connectivity failure and must not be presented as threshold/breach validation.
+- Documentation preparation does not change the package version, create a release, or authorize a PR, tag, publish, deployment, or live Google mutation.
 
 ## [0.4.3] - 2026-11-02
 

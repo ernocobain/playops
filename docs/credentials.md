@@ -139,17 +139,46 @@ These are the only accepted current threshold fields:
 - A present threshold environment override must be a decimal string. Blank, `"null"`, or negative overrides are invalid; remove the environment variable to leave the YAML/default disabled rule effective. There is no environment disable sentinel.
 - Legacy YAML `crash_rate_threshold` / `anr_rate_threshold`, typed `crashRateThreshold` / `anrRateThreshold`, and `PLAYOPS_HEALTH_CRASH_RATE_THRESHOLD` / `PLAYOPS_HEALTH_ANR_RATE_THRESHOLD` fail with **`CONFIG_MIGRATION_REQUIRED`**. They are never converted or silently retained. Other unsupported health fields are rejected too.
 - Excessive-wakeup thresholds are implemented for `excessiveWakeupRate`, **DAILY only**. Crash/ANR rules use `crashRate` / `anrRate`. A breach is a point strictly **greater than** the configured threshold; equality does not breach, and missing data is not zero.
-- `health.check_thresholds` is a separate **runtime capability**, not an installed CLI command. It writes breach-only internal audit alerts, not human notifications. `health report` does not run it, even if thresholds are active.
+- `playops health check` is the separate **read-only** threshold CLI. It evaluates the configured primary-metric rules over an explicit UTC window and never writes audit alerts or performs a Google mutation. Exit codes are `0` `NO_BREACH_OBSERVED`, `2` `BREACH_DETECTED`, and `1` for `INCOMPLETE_DATA`, `NO_DATA`, `DISABLED`, invalid arguments, or runtime failure. `NO_DATA` is valid for an app with no metric activity; it does not prove threshold evaluation against a real metric point.
+- `health.check_thresholds` is a separate **runtime capability**, not an installed CLI command. It writes breach-only internal audit alerts, not human notifications. Neither `health report` nor `health check` invokes it.
+
+### Running a read-only threshold check
+
+```sh
+playops health check --help
+playops health check \
+  --start 2026-11-05T08:00:00Z --end 2026-11-06T08:00:00Z \
+  --granularity DAILY --json
+```
+
+The window is illustrative. `--start`/`--end` use strict UTC instants, start-inclusive/end-exclusive; DAILY aligns to America/Los_Angeles midnight and HOURLY to UTC hours. `--dimensions` is optional; duplicates and unknown names are rejected. `--json` emits the six-field summary. The command requires no LLM provider or approval and never writes an audit alert. The source tree includes it for the next pre-1.0 preparation; the published `v0.4.3` tarball predates it.
 
 ## Connectivity is not mutation authorization
 
 After deliberate setup, `playops doctor` checks local config → credential shape → token acquisition → a one-review `reviews.list` read → `vitals.anrrate.get`. It is read-only on Google, but **does make live OAuth/API requests** when prerequisites pass. Exit 0 / READY means these checks passed, not that every release/reply operation is authorized. Missing prerequisites skip later checks; exit 1 / NOT READY does not prove connectivity. An empty review list is a successful read. A bare HTTP 403 does not identify the exact cause; check API enablement, effective service-account identity, app access, and required permission without broadening rights indiscriminately.
+
+### Recorded health-check smoke (2026-11-09)
+
+A single controlled read-only `playops health check` against a non-production historical test app completed OAuth, one Reporting metadata read, and one Reporting query, then returned:
+
+```json
+{
+  "status": "NO_DATA",
+  "enabledRuleCount": 1,
+  "evaluatedPointCount": 0,
+  "noDataCount": 1,
+  "breachedPointCount": 0,
+  "recordedAlertCount": 0
+}
+```
+
+The command exited `1` (valid `NO_DATA` mapping), wrote no audit alert, and performed no Publisher mutation. Nagili Driver is a legacy application with Internal Testing history that is no longer actively used. That is a possible explanation for the `NO_DATA` result, but the exact reason the metrics were unavailable has not been proven. This verifies OAuth, Reporting metadata/query connectivity, and response parsing only. It does **not** verify threshold evaluation against a real metric point, breach detection, or metric coverage. A data-bearing non-production target is required before making those claims.
 
 The recorded project evidence distinguishes:
 
 - **Implemented and fake/mock verified:** runtime permission/approval/verification boundaries, Review publishing safeguards, Release workflow, health reports/thresholds, audit/logging/error contracts, and local-tarball installation on Node 24.
 - **Prior live read/connectivity evidence:** the doctor's specific reads succeeded; this is not a blanket production authorization claim.
 - **Narrow live cleanup evidence:** one controlled insert/read/delete/post-delete-read observation supports only the contextual cleanup verifier. It is not a universal Google inactive-edit error contract or authorization proof for every application.
-- **Still live-unverified:** review reply mutation (`reviews.reply`), bundle upload (`edits.bundles.upload`), release configuration/notes (`edits.tracks.update`), edit commit (`edits.commit`), and rollout/halt/resume mutation authorization. Fake acceptance does not resolve these.
+- **Still live-unverified:** review reply mutation (`reviews.reply`), bundle upload (`edits.bundles.upload`), release configuration/notes (`edits.tracks.update`), edit commit (`edits.commit`), rollout/halt/resume mutation authorization, and `health check` threshold evaluation against real metric points (the connectivity smoke returned `NO_DATA`). Fake acceptance does not resolve these.
 
 Security review and versioning/release-process work remain separate, unfinished milestones. This guide documents the current controls; it does not declare PlayOps production-authorized.
