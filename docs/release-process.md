@@ -66,8 +66,16 @@ A release is **not** considered tagged if only `package.json` changed. The
 version bump, the lockfile update, the changelog entry, and the release
 documentation belong to the same commit that the annotated tag points at. The
 current prepared version in `package.json`, `package-lock.json` (root and
-`packages[""]`), and `CHANGELOG.md` is `0.4.3` (`v0.4.3` includes the PR-first
-release procedure documentation).
+`packages[""]`), and `CHANGELOG.md` is `0.5.0` (the prepared `v0.5.0` release
+candidate; `v0.4.3` remains the latest published prerelease and includes the
+PR-first release procedure documentation).
+
+The `0.5.0` candidate is a **MINOR** release under the pre-1.0 policy because it
+adds operator-visible CLI functionality (`playops health check`). It may be
+proposed as a pre-1.0 release candidate, but the documented live-metric
+threshold limitation remains residual risk that the operator must accept
+separately. This preparation does not imply production certification, release
+approval, or Google mutation authorization.
 
 Verify consistency before tagging:
 
