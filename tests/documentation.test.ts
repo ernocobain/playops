@@ -7,6 +7,7 @@ import { ENV_VARS, parseConfigYaml } from "../src/config/loader.js";
 import { DEFAULT_CONFIG } from "../src/config/types.js";
 import { parseReviewCommand } from "../src/cli/reviews.js";
 import { parseHealthCommand } from "../src/cli/health.js";
+import { parseHealthCheckCommand } from "../src/cli/health-check.js";
 import { runReleasesCli } from "../src/cli/releases.js";
 import { runCli } from "../src/cli/main.js";
 import { approveInteractively, createApprovalRequest } from "../src/runtime/approvals/index.js";
@@ -76,11 +77,20 @@ describe("Phase 6.4 operator documentation", () => {
         args.includes("--help") ? "help" : args[1],
       );
     } else if (args[0] === "health") {
-      const parsed = parseHealthCommand(args.slice(1));
-      expect(parsed.kind).toBe(args.includes("--help") ? "help" : "report");
-      if (parsed.kind === "report") {
-        expect(parsed.input.granularity).toBe("DAILY");
-        expect(parsed.outputDir).toBe("./reports");
+      if (args[1] === "check") {
+        const parsed = parseHealthCheckCommand(args.slice(2));
+        expect(parsed.kind).toBe(args.includes("--help") ? "help" : "check");
+        if (parsed.kind === "check") {
+          expect(parsed.input.granularity).toBe("DAILY");
+          expect(parsed.json).toBe(true);
+        }
+      } else {
+        const parsed = parseHealthCommand(args.slice(1));
+        expect(parsed.kind).toBe(args.includes("--help") ? "help" : "report");
+        if (parsed.kind === "report") {
+          expect(parsed.input.granularity).toBe("DAILY");
+          expect(parsed.outputDir).toBe("./reports");
+        }
       }
     } else if (args[0] === "releases") {
       expect(

@@ -145,7 +145,10 @@ describe("hostile diagnostic context", () => {
       throw new Error(SECRET);
     });
     const error = new Error(SECRET);
-    for (const key of ["message", "stack", "name", "code", "status", "externalStateUncertain"])
+    // Define stack before message: defining a stack accessor on an Error can
+    // cause the runtime to format the stack and read an already-defined hostile
+    // message getter before record() is called.
+    for (const key of ["stack", "message", "name", "code", "status", "externalStateUncertain"])
       Object.defineProperty(error, key, { get: getter });
     expect(record(error).context).toEqual({ name: "Error" });
     const invalid = Object.assign(new Error(SECRET), {

@@ -100,6 +100,8 @@ change output format: another prepare may create another pending request.
 
 ## Exit codes
 
+Daemon client:
+
 - **0** — the command did what it was asked, including `prepare` returning a
   valid `approval_required` challenge and exporting it.
 - **1** — a definite failure: usage, connect-before-dispatch, protocol error,
@@ -112,10 +114,24 @@ change output format: another prepare may create another pending request.
   malformed response after a possible dispatch, or an operator interrupt after a
   possible dispatch.
 
-This meaning of **2** is intentionally different from the legacy `playops
-reviews`/`health` convention, where exit 2 means "declined / approval
-required". The exact daemon outcome is always carried verbatim in human text
-and in `--json`.
+This daemon meaning of **2** is intentionally different from the review
+approval convention, where exit 2 means "declined / approval required", and from
+the health-check threshold verdict.
+
+### Health CLI exit codes (separate from the daemon)
+
+- `playops health check`: **0** `NO_BREACH_OBSERVED`; **2**
+  `BREACH_DETECTED`; **1** `INCOMPLETE_DATA`, `NO_DATA`, `DISABLED`, invalid
+  arguments, or runtime failure. `--json` prints the six-field summary.
+- `playops health report`: **0** successful report generation, including
+  descriptive unavailable/degraded data; **1** invalid arguments,
+  configuration/source failure, or storage failure.
+- `playops reviews`: **2** still means declined or approval-required; do not
+  reuse the health-check breach meaning for reviews.
+
+`health check` is read-only for audit purposes: it does not append
+`health.threshold.alert` and reports `recordedAlertCount: 0`. It is not a
+scheduler or notification system.
 
 ## Retry rules and disconnect uncertainty
 

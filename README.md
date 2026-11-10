@@ -80,6 +80,7 @@ No auto-publish, `--yes`, `--force`, or `--approve` shortcut exists. Publishing 
 
 ```sh
 playops health report --help
+playops health check --help
 ```
 
 The following **illustrative live-read command** requires configured Reporting access and an existing output directory. Dates are explicit sample windows, not a recommendation:
@@ -94,7 +95,21 @@ playops health report \
 
 All six flags are **required**. Timestamps are `YYYY-MM-DDTHH:MM:SSZ`, start-inclusive/end-exclusive; windows need equal period counts. DAILY boundaries are Los Angeles midnight expressed in UTC (**DST-aware**); HOURLY uses UTC hours. Default kinds are `crash_rate,anr_rate,excessive_wakeup_rate`; excessive wakeups is DAILY-only. Optional `--kinds`, `--dimensions`, `--metrics` accept comma-separated lists; each flag may appear once, as `--name VALUE` or `--name=VALUE`. Explicit metrics must be valid for **every** selected kind; defaults use each kind's primary metric.
 
-Health needs no LLM provider or approval. It saves a dated UTF-8/LF report exclusively, never overwrites a target, then writes **exactly the saved bytes to stdout**. Diagnostics/errors go to stderr. Exit 0 can include descriptive degradation/unavailable data; it is not a threshold-alert verdict. `health.check_thresholds` is a **separate runtime capability**, **not a CLI command**, scheduler or human-notification system; `health report` does not invoke it. Thresholds are disabled unless explicitly configured, use quoted exact reported-scale strings, and perform no percentage conversion.
+Health needs no LLM provider or approval. `health report` saves a dated UTF-8/LF report exclusively, never overwrites a target, then writes **exactly the saved bytes to stdout**. Diagnostics/errors go to stderr. Exit 0 can include descriptive degradation/unavailable data; it is not a threshold-alert verdict.
+
+`playops health check` is a separate **read-only** threshold CLI. It evaluates the configured primary-metric rules over an explicit UTC window and prints a compact human summary or a `--json` object. It never writes audit alerts, never calls the audit-writing threshold runtime tool, and never performs a Google mutation. Exit codes are: **0** `NO_BREACH_OBSERVED`; **2** `BREACH_DETECTED`; **1** `INCOMPLETE_DATA`, `NO_DATA`, `DISABLED`, invalid arguments, or runtime failure. `NO_DATA` is a valid result for an app with no metric activity; it does not prove threshold evaluation against a real metric point.
+
+```sh
+playops health check \
+  --start 2026-11-05T08:00:00Z --end 2026-11-06T08:00:00Z \
+  --granularity DAILY --json
+```
+
+The window above is illustrative, not a recommendation. `--start`/`--end` are strict UTC instants, start-inclusive/end-exclusive; DAILY aligns to Los Angeles midnight and HOURLY to UTC hours. `--dimensions` is optional; duplicate or unknown names are rejected. The source tree includes this command for the next pre-1.0 preparation; the published `v0.4.3` tarball predates it.
+
+`health.check_thresholds` remains a **separate runtime capability**, **not a CLI command**, scheduler or human-notification system. Neither `health report` nor `health check` invokes it. Thresholds are disabled unless explicitly configured, use quoted exact reported-scale strings, and perform no percentage conversion.
+
+A `2026-11-09` controlled read-only smoke against a non-production historical test app completed OAuth, Reporting metadata, and one query but returned `NO_DATA` with exit 1 and no audit alert. Nagili Driver is a legacy application with Internal Testing history that is no longer actively used. That is a possible explanation for the `NO_DATA` result, but the exact reason the metrics were unavailable has not been proven. Connectivity and response parsing are verified; threshold evaluation against real metric points remains unverified.
 
 ### Releases
 

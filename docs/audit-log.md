@@ -44,7 +44,7 @@ Other real event families include `approval.challenged`, `approval.denied`, `app
 
 ### Threshold alerts
 
-`health.check_thresholds` emits `health.threshold.alert` only for actual **strictly greater-than** breaches, with actor `system`, action `health.check_thresholds`, status `success`, and these metadata fields: `metricKind`, `metricName`, `observedValue`, `thresholdValue`, `operator`, `result` (`BREACHED`), `startTimeUtc`, `aggregationPeriod`, `window`, `dimensions`. Observed/threshold decimals retain reported scale. This is an **internal audit alert**, not a human notification or scheduler. Below/equal/no-data results do not append breach alerts. `health report` never triggers threshold evaluation.
+`health.check_thresholds` emits `health.threshold.alert` only for actual **strictly greater-than** breaches, with actor `system`, action `health.check_thresholds`, status `success`, and these metadata fields: `metricKind`, `metricName`, `observedValue`, `thresholdValue`, `operator`, `result` (`BREACHED`), `startTimeUtc`, `aggregationPeriod`, `window`, `dimensions`. Observed/threshold decimals retain reported scale. This is an **internal audit alert**, not a human notification or scheduler. Below/equal/no-data results do not append breach alerts. `health report` never triggers threshold evaluation. The separate `playops health check` CLI is **read-only for audit purposes**: it never writes `health.threshold.alert`, its `recordedAlertCount` is always `0`, and it does not invoke the runtime threshold tool.
 
 ## Durability and fail-closed boundaries
 
@@ -70,7 +70,7 @@ Diagnostic Error context never emits the raw error's message, stack or cause. It
 
 Set YAML `logging.level` or override it with `PLAYOPS_LOGGING_LEVEL`. Valid values are exactly lowercase **`debug`, `info`, `warn`, `error`**; default is **`info`**. Blank/case-changed/unsupported values are invalid config. The post-command diagnostic config read falls back safely to info if it cannot load diagnostic settings; it never rewrites the command's result.
 
-The current CLI emits one supplemental lifecycle record after an ordinary command: exit 0 → info/completed, exit 2 → warn/declined, exit 1/thrown failure → error/failed. Help stays quiet. It does not instrument every domain step. No built-in file transport/rotation, remote collector, or OpenTelemetry integration is provided.
+The current CLI emits one supplemental lifecycle record after an ordinary command: exit 0 → info/completed, exit 2 → warn (the current diagnostic text is `CLI command declined.`), exit 1/thrown failure → error/failed. The exit-2 diagnostic wording is generic: `playops health check` uses exit 2 for `BREACH_DETECTED`, so the command's summary/JSON is authoritative rather than that lifecycle label. Help stays quiet. It does not instrument every domain step. No built-in file transport/rotation, remote collector, or OpenTelemetry integration is provided.
 
 ## Safe operator-facing errors
 
