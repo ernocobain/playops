@@ -612,19 +612,20 @@ registerHooks({ resolve(specifier, context, nextResolve) {
   );
 
   // ---------------------- Stage 4C.4 release identity + provisioning readiness
+  const expectedVersion = releaseReport.version;
   check(
-    "candidate tree declares the 0.4.3 release version",
-    sourcePkg.version === "0.4.3",
-    sourcePkg.version,
+    "candidate tree declares the prepared release version",
+    releaseReport.ok && sourcePkg.version === expectedVersion,
+    `${sourcePkg.version} (${releaseReport.problems.join("; ")})`,
   );
   check(
-    "installed playops package version is 0.4.3",
-    installedMetadata.version === "0.4.3",
+    "installed playops package version is the prepared release version",
+    installedMetadata.version === expectedVersion,
     installedMetadata.version,
   );
   check(
-    "installed playopsd --version prints 0.4.3",
-    daemonVersion.status === 0 && daemonVersion.stdout === "playopsd 0.4.3\n",
+    "installed playopsd --version prints the prepared release version",
+    daemonVersion.status === 0 && daemonVersion.stdout === `playopsd ${expectedVersion}\n`,
     daemonVersion.stdout,
   );
   // Stage 4C.4: the operator CLI has its own version surface and must keep the
@@ -642,8 +643,8 @@ registerHooks({ resolve(specifier, context, nextResolve) {
     cliVersionProbe.stdout,
   );
   check(
-    "installed playops --version prints 0.4.3",
-    cliVersionProbe.status === 0 && cliVersionProbe.stdout === "playops 0.4.3\n",
+    "installed playops --version prints the prepared release version",
+    cliVersionProbe.status === 0 && cliVersionProbe.stdout === `playops ${expectedVersion}\n`,
     cliVersionProbe.stdout,
   );
   check(
